@@ -1,0 +1,12 @@
+data/
+outputs/
+__pycache__/
+*.pyc
+third_party/
+# generated assets (rebuild with scripts/build_twin.py / prepare_robots.py)
+assets/terrain/
+assets/twin/
+assets/robots/jackal/
+assets/robots/husky/
+assets/robots/limo/
+assets/robots/robots.json

@@ -1,0 +1,8 @@
+{
+  "name": "blue_wall",
+  "session_dir": "~/mydata/worldmodel/rss2027/RESEPI-A84717-2026-03-07-18-07-32",
+  "las": "~/mydata/worldmodel/bluewall/blue_wall.las",
+  "crs": "EPSG:32618 (WGS84 / UTM 18N), ellipsoidal height",
+  "bbox_utm": [703424.6438190774, 4696099.383182958, 703658.6438190774, 4696359.383182958],
+  "origin": [703424.6438190774, 4696099.383182958, 35.65545912775112]
+}
