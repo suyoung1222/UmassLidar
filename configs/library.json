@@ -1,0 +1,17 @@
+{
+  "name": "library",
+  "source": "las",
+  "las": "/home/suyoung/Documents/Git/UmassLidar/data/sites/library.las",
+  "bbox_utm": [
+    703199.87,
+    4696302.07,
+    703507.93,
+    4696622.35
+  ],
+  "crs": "UTM 18N as in the source LAS",
+  "origin": [
+    703199.87,
+    4696302.07,
+    60.14036782838036
+  ]
+}

@@ -82,12 +82,40 @@ def _iter_bbox(path, bbox):
             yield (X[m] * sx + ox - xmin, Y[m] * sy + oy - ymin, np.asarray(p.Z)[m] * sz + oz, p, m)
 
 
+def _elevated_mask(g, res, step=0.5, join=0.6, iters=8):
+    """Cells of a lowest-return surface that are not ground (roofs, vehicle tops, walls).
+    The surface is cut along steep cells; the largest connected piece is ground, and another
+    piece joins it only if it sits within `join` metres of the ground interpolated underneath
+    (lawns behind a kerb, terraces reached step by step). Roofs never join: they stand metres
+    above the ground interpolated across their footprint."""
+    steep = (ndimage.maximum_filter(g, 3) - ndimage.minimum_filter(g, 3)) > step
+    lab, n = ndimage.label(~steep)
+    if n == 0:
+        return np.zeros(g.shape, bool)
+    idx = np.arange(1, n + 1)
+    is_ground = np.zeros(n + 1, bool)
+    is_ground[1 + int(np.argmax(ndimage.sum(np.ones_like(g), lab, idx)))] = True
+    for _ in range(iters):
+        base = _fill_nan(np.where(is_ground[lab], g, np.nan))
+        med = np.r_[0.0, ndimage.median(g - base, lab, idx)]
+        new = is_ground | (med < join)
+        new[0] = False
+        if (new == is_ground).all():
+            break
+        is_ground = new
+    base = _fill_nan(np.where(is_ground[lab], g, np.nan))
+    return (g - base) > step
+
+
 def build_terrain_from_las(las, out_dir, name, bbox=None, mesh_res=0.25, tex_res=0.1, z_res=0.25,
                            min_pts=3, band=(0.3, 2.0), band_pts=4, roof_min_h=3.0,
-                           obstacle_cap=None, origin_z=None,
+                           obstacle_cap=None, origin_z=None, bare_earth=False,
                            crs="NAD83 / UTM zone 18N", verbose=True):
     """obstacle_cap: if set, obstacle / roof cells are raised only this far above the ground
-    (low collision stubs; the real 3D shape comes from structure.py as a visual mesh)."""
+    (low collision stubs; the real 3D shape comes from structure.py as a visual mesh).
+    bare_earth: for clouds seen from above (aerial photogrammetry), where the lowest return of a
+    building column is its roof: roofs are detected as plateaus bounded by drops and the ground is
+    interpolated underneath; every column with no ground return and something above is an obstacle."""
     t0 = time.time()
     info = las_info(las)
     if bbox is None:
@@ -129,6 +157,10 @@ def build_terrain_from_las(las, out_dir, name, bbox=None, mesh_res=0.25, tex_res
     # ground: fill holes, remove pits/spikes, then opening removes blobs whose lowest return
     # is not ground (dense canopy, car roofs) while keeping real slopes
     nodata = ndimage.distance_transform_edt(np.isnan(g0)) * mesh_res > 0.75
+    elevated = None
+    if bare_earth:
+        elevated = _elevated_mask(_fill_nan(g0.copy()), mesh_res)
+        g0 = np.where(elevated, np.nan, g0)
     g = ndimage.median_filter(_fill_nan(g0.copy()), 5)
     g = np.minimum(g, ndimage.grey_opening(g, size=int(6 / mesh_res) | 1))
     g = ndimage.uniform_filter(g, 3)
@@ -144,6 +176,8 @@ def build_terrain_from_las(las, out_dir, name, bbox=None, mesh_res=0.25, tex_res
     obstacle = band_cnt >= band_pts
     obstacle = ndimage.binary_opening(obstacle, np.ones((2, 2))) | \
         (band_cnt >= band_pts * 5)                                # keep thin but dense (poles)
+    if elevated is not None:
+        obstacle |= elevated & ((_fill_nan(top.copy()) - g) > band[0])
 
     top_f = _fill_nan(top.copy())
     above = (top_f - g) > roof_min_h

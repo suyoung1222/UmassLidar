@@ -67,17 +67,27 @@ def tile_structure_points(tiles, session, ground, ground_res, bounds, margin=1.5
     return pts[k], sen[k]
 
 
-def reconstruct_tile(pts, sensor, bounds, depth=9, trim_q=0.12, max_faces=60000, min_h_keep=None):
-    """Poisson surface for one tile. Returns (V, F) cropped to bounds, or None."""
+def reconstruct_tile(pts, sensor, bounds, depth=9, trim_q=0.12, max_faces=60000, min_h_keep=None,
+                     normal_radius=0.25, outlier=(6, 0.2), max_dist=0.12, clearance=None):
+    """Poisson surface for one tile. Returns (V, F) cropped to bounds, or None.
+    normal_radius / outlier (nb_points, radius) / max_dist scale with the point spacing
+    (defaults: 5 cm LiDAR voxels; aerial photogrammetry uses ~2.5x larger values).
+    Normals point towards `sensor` (per-point sensor positions). With sensor=None (clouds without
+    scan geometry) they point towards free space instead: clearance(P) -> height of P above the
+    top surface, and the side with the larger clearance is outside."""
     import open3d as o3d
     pc = o3d.geometry.PointCloud(o3d.utility.Vector3dVector(pts))
-    pc.estimate_normals(o3d.geometry.KDTreeSearchParamHybrid(radius=0.25, max_nn=30))
+    pc.estimate_normals(o3d.geometry.KDTreeSearchParamHybrid(radius=normal_radius, max_nn=30))
     n = np.asarray(pc.normals)
-    flip = np.einsum("ij,ij->i", n, sensor - pts) < 0
+    if sensor is None:
+        d = 2.0 * normal_radius
+        flip = clearance(pts - n * d) > clearance(pts + n * d)
+    else:
+        flip = np.einsum("ij,ij->i", n, sensor - pts) < 0
     n[flip] *= -1
     pc.normals = o3d.utility.Vector3dVector(n)
     # isolated specks produce Poisson blobs
-    pc, _ = pc.remove_radius_outlier(nb_points=6, radius=0.2)
+    pc, _ = pc.remove_radius_outlier(nb_points=outlier[0], radius=outlier[1])
     if len(pc.points) < 500:
         return None
     with o3d.utility.VerbosityContextManager(o3d.utility.VerbosityLevel.Error):
@@ -88,7 +98,7 @@ def reconstruct_tile(pts, sensor, bounds, depth=9, trim_q=0.12, max_faces=60000,
     # keep only surface close to actual points (Poisson closes holes with bubbles)
     tree = o3d.geometry.KDTreeFlann(pc)
     V = np.asarray(mesh.vertices)
-    far = np.array([tree.search_knn_vector_3d(v, 1)[2][0] > 0.12 ** 2 for v in V])
+    far = np.array([tree.search_knn_vector_3d(v, 1)[2][0] > max_dist ** 2 for v in V])
     mesh.remove_vertices_by_mask(far)
     x0, y0, x1, y1 = bounds
     V = np.asarray(mesh.vertices); F = np.asarray(mesh.triangles)

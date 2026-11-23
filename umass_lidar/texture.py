@@ -210,10 +210,10 @@ def _norm_conv(sum_img, cnt_img, sigma):
     return s / np.maximum(c, 1e-6), c
 
 
-def ground_tile_stage_a(bank, tiles, imodel, surf, ground, sem, mesh_res, tex_res, cells, out_npz,
-                        table):
-    """Photo + LAS colour and intensity for one ground texture tile.
-    cells = (j0, j1, i0, i1): mesh vertex index ranges (inclusive) of the tile."""
+def ground_texels(surf, mesh_res, tex_res, cells):
+    """World position / normal of every texel of one ground tile.
+    cells = (j0, j1, i0, i1): mesh vertex index ranges (inclusive) of the tile.
+    Returns (P (K,3), N (K,3), z (th,tw), coords, bounds, (th, tw))."""
     j0, j1, i0, i1 = cells
     X0, X1 = (j0 + 0.5) * mesh_res, (j1 + 0.5) * mesh_res
     Y0, Y1 = (i0 + 0.5) * mesh_res, (i1 + 0.5) * mesh_res
@@ -233,6 +233,15 @@ def ground_tile_stage_a(bank, tiles, imodel, surf, ground, sem, mesh_res, tex_re
     P = np.stack([XX, YY, z], -1).reshape(-1, 3)
     N = nrm.reshape(-1, 3).astype(np.float32)
     bounds = (X0, Y0, X1, Y1)
+    return P, N, z, coords, bounds, (th, tw)
+
+
+def ground_tile_stage_a(bank, tiles, imodel, surf, ground, sem, mesh_res, tex_res, cells, out_npz,
+                        table):
+    """Photo + LAS colour and intensity for one ground texture tile.
+    cells = (j0, j1, i0, i1): mesh vertex index ranges (inclusive) of the tile."""
+    P, N, z, coords, bounds, (th, tw) = ground_texels(surf, mesh_res, tex_res, cells)
+    X0, Y0, X1, Y1 = bounds
     rgb, wsum = project_photos(bank, P, N, bounds)
     src = np.where(wsum > 0, SRC_PHOTO, SRC_NONE).astype(np.uint8)
 
@@ -310,6 +319,21 @@ def finish_texture(npz, table_rgb, feather_px=6, nodata_rgb=(96, 96, 96)):
         soft = ndimage.gaussian_filter(nd.astype(np.float32), 3)[..., None]
         out = out * (1 - soft) + np.array(nodata_rgb, np.float32) * soft
     return np.clip(out, 0, 255).astype(np.uint8), src
+
+
+def apply_grade(rgb, grade):
+    """Global colour grade of a finished texture, in linear RGB, identical to the Gain / Saturation /
+    Gamma knobs of the Blender "TwinShade" node group (scripts/blender_twin.py).
+    grade = dict(gain=1.0, saturation=1.0, gamma=1.0) or None."""
+    if not grade:
+        return rgb
+    c = rgb.astype(np.float32) / 255
+    lin = np.where(c <= 0.04045, c / 12.92, ((c + 0.055) / 1.055) ** 2.4) * grade.get("gain", 1.0)
+    lum = lin @ np.array([0.2126, 0.7152, 0.0722], np.float32)
+    lin = lum[..., None] + (lin - lum[..., None]) * grade.get("saturation", 1.0)
+    lin = np.clip(lin, 0, None) ** grade.get("gamma", 1.0)
+    c = np.where(lin <= 0.0031308, lin * 12.92, 1.055 * np.clip(lin, 1e-9, None) ** (1 / 2.4) - 0.055)
+    return np.clip(c * 255 + 0.5, 0, 255).astype(np.uint8)
 
 
 # --------------------------------------------------------------------------- structure atlases

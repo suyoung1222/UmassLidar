@@ -74,6 +74,7 @@ def export_tile(job):
     name, kind = job
     from PIL import Image
     rgb, src = texture.finish_texture(G["bake"] / f"{name}.npz", G["table_rgb"])
+    rgb = texture.apply_grade(rgb, G.get("grade"))
     out = G["twin"]
     if kind == "ground":
         j0, j1, i0, i1 = G["gcells"][name]
@@ -105,6 +106,7 @@ def write_maps(twin_root, twin, gjobs, res, size_xy, ppm=5.0):
     for name, (j0, j1, i0, i1) in gjobs:
         x0, x1 = int(round((j0 + .5) * res * ppm)), int(round((j1 + .5) * res * ppm))
         y0, y1 = int(round((i0 + .5) * res * ppm)), int(round((i1 + .5) * res * ppm))
+        x1, y1 = min(x1, W), min(y1, H)                      # size_xy need not be a multiple of 1/ppm
         im = cv2.imread(str(twin / f"{name}.png"))
         if im is None or x1 <= x0 or y1 <= y0:
             continue
@@ -172,7 +174,7 @@ def main():
     imodel = texture.IntensityModel.fit(sub)
     G.update(bake=bake, twin=twin, tiles=tiles, session=session, imodel=imodel, surf=surf, ground=ground,
              sem=sem, mesh_res=res, tex_res=a.tex_res, struct_texel=a.struct_texel, max_faces=a.max_faces,
-             gcells=dict(gjobs))
+             gcells=dict(gjobs), grade=cfg.get("grade"))
 
     # ---- bake
     todo_g = [j for j in gjobs if "bake" in a.redo or not (bake / f"{j[0]}.done").exists()]

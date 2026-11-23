@@ -7,6 +7,117 @@ navigation 실험과 주행 데이터 수집을 하는 repo.
   아래 "RSS2027 Digital Twin" 절 전체가 이 내용이다.
 - **보조 도구**: 항공 LiDAR(`Airborne.las`)에서 장소를 잘라 2.5D terrain을 만드는 초기 실험 코드. 맨 아래 절.
 
+
+# Quick guideline
+## 1. Select region.
+
+```bash
+conda activate umasslidar
+# (최초 1회) 전체 overview 지도 생성
+python scripts/las_overview.py --las ~/Desktop/Airborne.las --out data/overview
+# 지도에서 네모를 그려 그 영역을 LAS로 잘라낸다
+python scripts/select_region.py --name library
+```
+
+- 조작: 왼쪽 drag = 네모(모서리를 끌어 수정), scroll = zoom, 오른쪽 drag = 이동, `Enter` = 잘라내기, `Esc` = 취소.
+- 제목 줄에 크기 / 면적 / 예상 point 수가 나온다. 한계를 넘으면 빨간색이 되고 `Enter`가 거부되니 다시 그린다.
+- 출력: `data/sites/<name>.las` (원본과 같은 형식·좌표계) + `<name>.json` (bbox, 면적, point 수). 20 GB 전체 scan에 약 30초.
+- 기본 한계: 한 변 500 m, 25 ha (RTX 4090 24 GB 기준 추정). `--max-side`, `--max-area`로 바꾼다.
+- 다른 LAS는 `--las`와 `--overview`, 출력 위치는 `--out`.
+- 화면이 없으면(원격) 좌표로 직접: `python scripts/select_region.py --bbox XMIN YMIN XMAX YMAX --name b1`
+
+## 2. Build twin from the region
+
+```bash
+conda activate umasslidar
+python scripts/build_twin_site.py --las data/sites/library.las      # library 9.9 ha: 수 분
+```
+
+- 입력은 점의 위치와 색뿐이다(사진·센서 궤적 불필요). 첫 실행 때 `configs/library.json`이 만들어지고, 이후 모든 script는 이 config를 쓴다.
+- 출력: `assets/twin/library/` (`ground.glb` 충돌 mesh, `map.png` waypoint용 지도, `full/` tile GLB·PNG·`twin.json`), cache는 `data/library/`.
+- 단계별 cache: 다시 실행하면 export만 돈다(약 10 s). 다시 계산하려면 `--redo ground|cloud|bake`.
+- 일부만 빠르게: `--region X0 Y0 X1 Y1` (local m, `map.png` 좌표) → `crop` variant로 따로 저장된다.
+- 품질 option (바꾸면 `--redo bake`):
+  `--tex-res 0.05` 바닥 texel(점 간격이 약 0.1 m라 더 줄여도 선명해지지 않음), `--smooth 0.07` 점 색 번짐 폭,
+  `--fill 0.6` 나무 밑 등 빈 바닥을 주변 색으로 메우는 폭, `--voxel 0.12` 구조물 mesh 조밀도(작으면 조각남, 크면 뭉개짐),
+  `--min-h 0.4` 이 높이 이상만 3D 구조물.
+- `map.png`의 초록 = 주행 가능. 건물·나무·주차된 차는 장애물로 잡힌다.
+
+## 3. Compare texture using Blender
+
+```bash
+# 주행 기록 없이: 지도 좌표 (x y yaw°)에 LIMO 카메라 높이로 D455를 놓는다. yaw 0 = 동, 90 = 북
+blender --python scripts/blender_twin.py -- --twin assets/twin/library/full --at 170 150 90
+
+# 창 없이 여러 시점을 still로 (frame 0, 1, ... = --at 순서)
+blender -b --python scripts/blender_twin.py -- --twin assets/twin/library/full \
+    --at 170 150 90 --at 150 135 0 --render outputs/blender/library --frames 0 2 1
+
+# 주행 기록이 있으면 그 궤적을 따라간다
+blender --python scripts/blender_twin.py -- --twin assets/twin/library/full --run outputs/nav/library_000
+```
+
+- `Numpad 0` = D455 시점, viewport shading은 Material Preview. 색 관리는 `Standard`로 둔다.
+- 색 조정: Shader editor에서 `TwinShade` group 안의 `Gain` / `Saturation` / `Gamma` 값을 바꾸면 전체 tile에 즉시 반영된다.
+  정한 값을 `configs/library.json`에 `"grade": {"gain": 1.2, "saturation": 1.1, "gamma": 0.95}`로 적고 2번 명령을 다시 실행하면
+  texture에 구워진다. 그 뒤 Blender에서는 knob을 1로 되돌리고 `for im in bpy.data.images: im.reload()`.
+- 출처 확인: `ShowSource`를 1로. 파랑 = 점 색, 연파랑 = 주변 색으로 메운 곳, 주황 = 색 정보 없음(재질 평균색).
+- mesh / 해상도 option을 바꿨을 때는 `--region`으로 작게 구워 `--twin assets/twin/library/crop`을 같은 `--at`으로 렌더해 비교한다.
+- 전체 설명과 parameter 표: [docs/blender_tuning.md](docs/blender_tuning.md)
+
+## 4. Run navigation
+
+```bash
+conda activate gleam && export LD_LIBRARY_PATH=$CONDA_PREFIX/lib:$LD_LIBRARY_PATH
+python scripts/run_nav.py --config configs/library.json --waypoints 150 140 190 130 215 100 240 60 \
+    --out outputs/nav/library_000 --headless
+```
+
+- waypoint는 `assets/twin/library/map.png`에서 읽은 local m (첫 점이 출발점). `--plan-only`로 경로만 먼저 확인할 수 있다.
+
+
+
+---
+# Datasets
+## 1. 2026 03 07 snowy bluewall
+Sensors: Inertial Labs RESEPI + Hesai 32ch LiDAR + Sony a5100
+Data (https://drive.google.com/drive/u/1/folders/1MhfiWRgno-qihtz96PdWmms9i4fMCdGZ):
+2026-03-07-18-07-32 (24 GB)	33분 주행, 사진 796장	PPK 후처리까지 끝남. 메인 세션
+2026-03-04-23-35-52 (1.5 GB)	20초, 사진 11장, lidar.scan 94 MB	raw만 있음 (ppk.txt 없음). 테스트 촬영임.
+
+```bash
+camera/<serial>_<t0>_<t1>.jpg   796장, 6000×4000, Sony ILCE-5100
+                                t는 µs, t/1e6 − 1e9 = LAS gps_time. EXIF orientation=3 (180° 회전)
+ins/ppk.txt                     PPK 궤적 125 Hz: Week GPSTime UTCTime Lon Lat H-Ell Heading Pitch Roll
+ins/trajectories/ppk/*.txt      같은 궤적을 geoid만 바꿔 5벌 (WGS84 ellipsoid, GEOID18 등)
+ins/SBET.OUT                    같은 궤적 (SBET binary)
+ins/*-imu.imr, *-gnss.gps 외     raw IMU/GNSS와 Waypoint Inertial Explorer 중간 파일
+data/hamp0660.*, igu*.sp3       PPK 베이스국 데이터 (CORS 'hamp', RINEX obs/nav, 정밀 궤도력)
+data/RESEPI-*.data (57개, 15 GB) 장비 raw 로그
+processed_ppk.pcmp              LiDAR lever arm, boresight, 장착각(pitch −45°), 레이저별 보정
+processed_ppk.pcpp              카메라 lever arm (0, −0.08, −0.048), boresight, 장착 −45°, 사진 목록
+log.txt                         수집 요약: GNSS 위성 수(21–25개가 70%), IMU 통계, range 필터 8–200 m
+```
+
+## 2. Airborne.las EE2023
+Sensors: Inertial Labs RESEPI + Hesai 32ch LiDAR + DJI drone camera
+Data (https://drive.google.com/drive/u/1/folders/1kBTbf2Wi2AtV4I8o0_BCfMtxHIy65xED):
+
+```bash
+Aerial Images/RegionXX/DJI_*.JPG   25개 region, 사진 12,514장
+    대부분 Mavic 2 Pro (5472×3648, RTK 없음, 고도 약 122 m), 수직 촬영(nadir)
+    Region17/18/19/23/24/25/26/WEB는 경사 촬영 (gimbal −65°)
+    Region08_09_10_15_16만 Mavic 3E + PPK 파일 (.nav/.obs/Timestamp)
+AlignedChunksViaPointClouds/
+    *_SubregionSet_1.psx/.files   chunk 17(R29), 18(R22), 38(R36_37_38_44), 40/41 merged
+    *_SubregionSet_2_*.psx/.files chunk 10(R26), 14(R25), 15(R24), 16(R23), 37–39 merged
+      각 chunk: chunk.zip/doc.xml (정렬된 카메라 pose, calibration, chunk→ECEF 변환)
+                0/depth_maps (EXR, 원본의 1/8 해상도), dense_cloud (proprietary .oc3)
+                point_cloud (tie points), merged chunk에는 elevation (DEM)
+    transects.shp, Set2_Chunks*.png (GCP 정렬 전후 스크린샷)
+```
+
+
 ---
 
 # RSS2027 Digital Twin (main pipeline)
@@ -308,6 +419,10 @@ scripts/
   run_nav.py                LIMO waypoint navigation + 세 시점 기록 (Isaac Gym)
   eval_vo.py                사진만으로 SfM → INS 비교
   prepare_robots.py         robot URDF 준비
+  select_region.py          overview 지도에서 영역을 골라 LAS로 잘라내기
+  build_twin_site.py        잘라낸 색 점군 LAS → digital twin (사진·궤적 없이)
+  build_twin_aerial.py      Metashape 항공 사진 project → digital twin (EE2023, configs/blue_wall_aerial.json)
+  blender_twin.py           twin을 Blender에서 열어 texture / D455 조정 (docs/blender_tuning.md)
   las_overview.py, crop_las.py   보조 도구 (항공 LiDAR)
 umass_lidar/
   resepi.py                 세션 로더, UTM 변환, LAS shift 추정, tile/voxel cache
@@ -315,6 +430,7 @@ umass_lidar/
   las_terrain.py            LAS → 2.5D ground / obstacle / roof
   structure.py              3D 구조물 mesh (Poisson)
   texture.py                photo 투영, intensity model, 재질표, GLB export
+  metashape.py              Metashape chunk 로더 (pose, depth map → cloud, 항공 사진 bank)
   nav.py                    traversability, A*, pure pursuit
   sim.py, sim_assets.py     Isaac Gym helper (twin 로딩, 조명, robot, 카메라)
   viz.py, mesh.py, io.py    지도 그리기, 2.5D mesh, 보조 도구용 I/O
