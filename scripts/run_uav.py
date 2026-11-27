@@ -60,8 +60,10 @@ def main():
     ap.add_argument("--no-structure-collision", action="store_true", help="same as --collision none")
     ap.add_argument("--out", required=True)
     ap.add_argument("--headless", action="store_true")
+    ap.add_argument("--free-camera", action="store_true",
+                    help="viewer starts with the free camera instead of following the robot (keys 1 / 0 switch)")
     ap.add_argument("--plan-only", action="store_true")
-    ap.add_argument("--uav", default="quad", choices=sorted(U.MODELS), help="UAV model")
+    ap.add_argument("--uav", default="starling", choices=sorted(U.MODELS), help="UAV model")
     a = ap.parse_args()
     QP = U.MODELS[a.uav]
     if a.no_structure_collision:
@@ -112,7 +114,8 @@ def main():
     chase = gym.create_camera_sensor(env, cc)
     spec = dict(S.D455, depth_max=a.depth_max)
     ego = S.RGBDCamera(gym, env, quad, a.cam_pitch_deg, spec)
-    viewer = None if a.headless else gym.create_viewer(sim, gymapi.CameraProperties())
+    viewer = None if a.headless else S.FollowViewer(gym, sim, env, {
+        "uav": (lambda: (quad.state()["pos"], quad.state()["yaw"]), 3.0)}, None if a.free_camera else "uav")
 
     writers = {k: imageio.get_writer(out / f"{k}.mp4", fps=FPS, quality=q, macro_block_size=1)
                for k, q in (("topview", 6), ("chase", 7), ("d455_rgb", 8), ("d455_depth", 7), ("combined", 7))}
@@ -242,10 +245,8 @@ def main():
             writers["d455_depth"].append_data(dv)
             writers["combined"].append_data(np.hstack([ti, np.vstack([ci, rgb_s])]))
             frame += 1
-        if viewer is not None:
-            if gym.query_viewer_has_closed(viewer):
-                break
-            gym.step_graphics(sim); gym.draw_viewer(viewer, sim, True); gym.sync_frame_time(sim)
+        if viewer is not None and not viewer.step():
+            break
         k += 1
 
     for w_ in writers.values():
@@ -274,7 +275,7 @@ def main():
     print(f"[done] {status}: planned {route_len:.1f} m, flown {dist:.1f} m in {frame / FPS:.1f} s, "
           f"goal error {err:.2f} m, max cross-track {max_err:.2f} m -> {out}")
     if viewer is not None:
-        gym.destroy_viewer(viewer)
+        viewer.close()
     gym.destroy_sim(sim)
 
 

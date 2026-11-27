@@ -34,58 +34,84 @@ QUAD = dict(
     camera_xyz=(0.13, 0.0, -0.03),
 )
 
-# ModalAI Starling 2 Max. Published: take-off weight 566 g, 322 mm diagonal, 180 mm tri-blade props,
-# 500 g payload (docs.modalai.com/starling-2-max-datasheet). ModalAI publishes no URDF, thrust curve
-# or inertia, so f_max / inertia / drag / k_m below are ESTIMATES: f_max from "lifts 500 g payload
-# with thrust/weight ~2", inertia from a 322 mm frame with the mass at the motors and battery.
+# ModalAI Starling 2 Max. Published (docs.modalai.com/starling-2-max-datasheet): take-off weight
+# 566 g, motor-to-motor 260 mm wide x 190 mm long (322 mm diagonal), 180 mm tri-blade props,
+# 2203.5 1500 KV motors, 500 g payload. ModalAI publishes no URDF, thrust curve or inertia.
+# Geometry, meshes and inertia follow the community model github.com/BjarkeHJ/AIRLAB_Starling2Max
+# (fetched by scripts/prepare_robots.py --starling; inertia there is a solid-box approximation of the
+# 0.217 x 0.287 x 0.129 m body). f_max, k_m, tau_motor and drag are ESTIMATES, not measurements
+# (that model assumes thrust/weight 2.58; f_max here gives 3.7).
 STARLING = dict(
     name="starling",
     mass=0.566,
-    inertia=(0.0042, 0.0042, 0.0075),
-    arm=0.161,                # centre -> rotor [m] (322 mm diagonal taken as motor to motor)
+    inertia=(0.00441, 0.00284, 0.00576),
+    arm=0.161,                # centre -> rotor [m]
+    rotor_xy=(0.095, 0.130),  # rotor offset forward / sideways [m]: the frame is wider than long
+    rotor_z=0.024,
     f_max=5.2,                # per rotor [N], estimate
     k_m=0.016,
     tau_motor=0.03,
     drag=(0.20, 0.20, 0.28),
     prop_radius=0.090,
     body=(0.17, 0.08, 0.05),
+    mesh=dict(body="meshes/Starling2Max_body.obj", prop="meshes/Starling2Max_7040prop.obj"),
     camera_link="d455_link",
-    camera_xyz=(0.10, 0.0, -0.02),
+    camera_xyz=(0.13, 0.0, -0.01),
 )
 MODELS = {"quad": QUAD, "starling": STARLING}
 
 
-def write_quad_urdf(path=None, p=QUAD):
-    """Box body + 4 arms + 4 rotor discs (visual only) + fixed d455_link."""
+def rotor_xy(p):
+    """Rotor positions (x fwd, y left) in the order FL, RL, RR, FR."""
+    rx, ry = p.get("rotor_xy", (p["arm"] / np.sqrt(2),) * 2)
+    return np.array([[rx, ry], [-rx, ry], [-rx, -ry], [rx, -ry]])
+
+
+def write_quad_urdf(path=None, p=STARLING):
+    """Body + 4 rotors (visual only) + fixed d455_link. Uses the meshes in p["mesh"] when they have
+    been fetched (scripts/prepare_robots.py --starling), otherwise boxes and discs."""
     name = p.get("name", "quad")
     path = Path(path or ROOT / f"assets/robots/{name}/{name}.urdf")
     bx, by, bz = p.get("body", (0.16, 0.10, 0.06))
     pr = p.get("prop_radius", 0.065)
     path.parent.mkdir(parents=True, exist_ok=True)
     ixx, iyy, izz = p["inertia"]
-    a = p["arm"] / np.sqrt(2)
-    vis = [f'<visual><geometry><box size="{bx} {by} {bz}"/></geometry>'
-           '<material name="body"><color rgba="0.15 0.15 0.17 1"/></material></visual>']
-    for k, (sx, sy) in enumerate(((1, 1), (-1, 1), (-1, -1), (1, -1))):
-        yaw = np.arctan2(sy, sx)
-        vis.append(f'<visual><origin xyz="{sx * a / 2:.4f} {sy * a / 2:.4f} 0" rpy="0 0 {yaw:.4f}"/>'
-                   f'<geometry><box size="{p["arm"]:.3f} 0.025 0.02"/></geometry>'
-                   '<material name="arm"><color rgba="0.25 0.25 0.28 1"/></material></visual>')
-        col = "0.9 0.25 0.15 1" if sx > 0 else "0.2 0.6 0.95 1"       # red = front
-        vis.append(f'<visual><origin xyz="{sx * a:.4f} {sy * a:.4f} 0.03"/>'
-                   f'<geometry><cylinder radius="{pr}" length="0.008"/></geometry>'
-                   f'<material name="rotor{k}"><color rgba="{col}"/></material></visual>')
+    rxy = rotor_xy(p)
+    mesh = p.get("mesh")
+    if mesh and all((path.parent / f).exists() for f in mesh.values()):
+        vis = [f'<visual><geometry><mesh filename="{mesh["body"]}"/></geometry>'
+               '<material name="body"><color rgba="0.12 0.12 0.13 1"/></material></visual>']
+        for k, (x, y) in enumerate(rxy):
+            col = "0.9 0.25 0.15 1" if x > 0 else "0.2 0.6 0.95 1"        # red = front
+            vis.append(f'<visual><origin xyz="{x:.4f} {y:.4f} {p.get("rotor_z", 0.03)}" rpy="0 0 {0.7 * k:.2f}"/>'
+                       f'<geometry><mesh filename="{mesh["prop"]}"/></geometry>'
+                       f'<material name="rotor{k}"><color rgba="{col}"/></material></visual>')
+        cam_box = "0.012 0.03 0.012"
+    else:
+        vis = [f'<visual><geometry><box size="{bx} {by} {bz}"/></geometry>'
+               '<material name="body"><color rgba="0.15 0.15 0.17 1"/></material></visual>']
+        for k, (x, y) in enumerate(rxy):
+            yaw, ln = np.arctan2(y, x), float(np.hypot(x, y))
+            vis.append(f'<visual><origin xyz="{x / 2:.4f} {y / 2:.4f} 0" rpy="0 0 {yaw:.4f}"/>'
+                       f'<geometry><box size="{ln:.3f} 0.025 0.02"/></geometry>'
+                       '<material name="arm"><color rgba="0.25 0.25 0.28 1"/></material></visual>')
+            col = "0.9 0.25 0.15 1" if x > 0 else "0.2 0.6 0.95 1"       # red = front
+            vis.append(f'<visual><origin xyz="{x:.4f} {y:.4f} 0.03"/>'
+                       f'<geometry><cylinder radius="{pr}" length="0.008"/></geometry>'
+                       f'<material name="rotor{k}"><color rgba="{col}"/></material></visual>')
+        cam_box = "0.03 0.12 0.03"
+    cbx, cby = 2 * rxy[0] + 0.1
     cx, cy, cz = p["camera_xyz"]
     urdf = f"""<robot name="{name}">
 <link name="base_link">
   <inertial><mass value="{p['mass']}"/>
     <inertia ixx="{ixx}" iyy="{iyy}" izz="{izz}" ixy="0" ixz="0" iyz="0"/></inertial>
   {''.join(vis)}
-  <collision><geometry><box size="{2 * a + 0.1:.3f} {2 * a + 0.1:.3f} 0.08"/></geometry></collision>
+  <collision><geometry><box size="{cbx:.3f} {cby:.3f} 0.08"/></geometry></collision>
 </link>
 <link name="{p['camera_link']}">
   <inertial><mass value="0.001"/><inertia ixx="1e-6" iyy="1e-6" izz="1e-6" ixy="0" ixz="0" iyz="0"/></inertial>
-  <visual><geometry><box size="0.03 0.12 0.03"/></geometry>
+  <visual><geometry><box size="{cam_box}"/></geometry>
     <material name="cam"><color rgba="0.05 0.05 0.05 1"/></material></visual>
 </link>
 <joint name="d455_joint" type="fixed"><parent link="base_link"/><child link="{p['camera_link']}"/>
@@ -103,10 +129,9 @@ def quat_to_R(q):
                      [2 * (x * z - y * w), 2 * (y * z + x * w), 1 - 2 * (x * x + y * y)]])
 
 
-def mixer(p=QUAD):
+def mixer(p=STARLING):
     """A with [T, tau_x, tau_y, tau_z] = A @ f.  Rotors (x, y): FL, RL, RR, FR; FL/RR spin CCW."""
-    a = p["arm"] / np.sqrt(2)
-    xy = np.array([[a, a], [-a, a], [-a, -a], [a, -a]])
+    xy = rotor_xy(p)
     spin = np.array([1, -1, 1, -1])          # tau_z = k_m * sum(spin_i * f_i)
     return np.vstack([np.ones(4), xy[:, 1], -xy[:, 0], spin * p["k_m"]])
 
@@ -114,7 +139,7 @@ def mixer(p=QUAD):
 class QuadController:
     """Lee et al. SO(3) geometric controller. All inputs world frame, z up."""
 
-    def __init__(self, p=QUAD, max_tilt_deg=35.0, max_acc=(4.0, 3.0)):
+    def __init__(self, p=STARLING, max_tilt_deg=35.0, max_acc=(4.0, 3.0)):
         self.p, self.m, self.J = p, p["mass"], np.diag(p["inertia"])
         self.A = mixer(p)
         self.Ainv = np.linalg.inv(self.A)
@@ -160,7 +185,7 @@ class QuadController:
 class Quadrotor:
     """Isaac Gym actor + rotor dynamics. Call apply_motors() before every gym.simulate()."""
 
-    def __init__(self, gym, sim, env, xyz, yaw, dt, p=QUAD):
+    def __init__(self, gym, sim, env, xyz, yaw, dt, p=STARLING):
         from isaacgym import gymapi
         self.gymapi, self.gym, self.env, self.p, self.dt = gymapi, gym, env, p, dt
         self.cfg = dict(camera_link=p["camera_link"], camera_xyz=list(p["camera_xyz"]))

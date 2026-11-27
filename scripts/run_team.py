@@ -1,4 +1,4 @@
-"""UGV + UAV in one sim: a wheeled robot (default LIMO) and the quadrotor follow the same waypoints
+"""UGV + UAV in one sim: a wheeled robot (default Warthog) and the quadrotor follow the same waypoints
 along the same A* ground path. The quad flies above that path at
     z = max(ground + --agl, structure top + --clearance)   (smoothed along the path).
 
@@ -60,7 +60,7 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--config", default=None, help="session config (default configs/blue_wall.json)")
     ap.add_argument("--variant", default="full")
-    ap.add_argument("--robot", default="limo")
+    ap.add_argument("--robot", default="warthog")
     ap.add_argument("--waypoints", type=float, nargs="+", metavar="X Y", required=True, help="x0 y0 x1 y1 ... (start first)")
     ap.add_argument("--utm", action="store_true")
     ap.add_argument("--speed", type=float, default=None, help="UGV m/s (default: robot max, capped 1.0)")
@@ -76,8 +76,12 @@ def main():
     ap.add_argument("--collision", choices=("mesh", "voxel", "none"), default="mesh")
     ap.add_argument("--out", required=True)
     ap.add_argument("--headless", action="store_true")
+    ap.add_argument("--follow", default="ugv", choices=("ugv", "uav", "free"),
+                    help="viewer camera at start (keys 1/2/0 switch while running)")
+    ap.add_argument("--no-record", action="store_true",
+                    help="skip camera rendering and videos (much faster live view); CSV and result.json only")
     ap.add_argument("--plan-only", action="store_true")
-    ap.add_argument("--uav", default="quad", choices=sorted(U.MODELS), help="UAV model")
+    ap.add_argument("--uav", default="starling", choices=sorted(U.MODELS), help="UAV model")
     a = ap.parse_args()
     QP = U.MODELS[a.uav]
 
@@ -134,10 +138,14 @@ def main():
     chase = gym.create_camera_sensor(env, cc)
     ego_g = S.RGBDCamera(gym, env, robot, a.cam_pitch_deg)
     ego_a = S.RGBDCamera(gym, env, quad, a.uav_cam_pitch_deg)
-    viewer = None if a.headless else gym.create_viewer(sim, gymapi.CameraProperties())
+    ugv_view = max(3.0, 14.0 * rcfg["wheel_radius"])
+    viewer = None if a.headless else S.FollowViewer(gym, sim, env, {
+        "ugv": (lambda: (robot.state()[0], robot.state()[2]), ugv_view),
+        "uav": (lambda: (quad.state()["pos"], quad.state()["yaw"]), 3.0)}, None if a.follow == "free" else a.follow)
+    rec = not a.no_record
 
     vids = ("topview", "chase", "ugv_rgb", "ugv_depth", "uav_rgb", "uav_depth", "combined")
-    writers = {k: imageio.get_writer(out / f"{k}.mp4", fps=FPS, quality=7, macro_block_size=1) for k in vids}
+    writers = {k: imageio.get_writer(out / f"{k}.mp4", fps=FPS, quality=7, macro_block_size=1) for k in vids} if rec else {}
     fg = open(out / "trajectory_ugv.csv", "w", newline=""); wg = csv.writer(fg)
     fa = open(out / "trajectory_uav.csv", "w", newline=""); wa = csv.writer(fa)
     head = ["frame", "t", "x", "y", "z", "qx", "qy", "qz", "qw", "yaw", "utm_e", "utm_n", "h_ell",
@@ -230,16 +238,6 @@ def main():
             back = 6.0 + 1.2 * np.linalg.norm(upos - pos)
             gym.set_camera_location(chase, env, gymapi.Vec3(pos[0] - back * c, pos[1] - back * sn, pos[2] + 0.45 * back),
                                     gymapi.Vec3(mid[0], mid[1], mid[2]))
-            gym.step_graphics(sim)
-            gym.render_all_camera_sensors(sim)
-            ti = top.image(sim)
-            ci = gym.get_camera_image(sim, env, chase, gymapi.IMAGE_COLOR).reshape(cc.height, cc.width, 4)[..., :3].copy()
-            rg, dg16, vg = ego_g.read(sim)
-            ra, da16, va = ego_a.read(sim)
-            valid_g.append(vg); valid_a.append(va)
-            if not a.no_depth_png:
-                cv2.imwrite(str(out / "depth_ugv" / f"{frame:06d}.png"), dg16)
-                cv2.imwrite(str(out / "depth_uav" / f"{frame:06d}.png"), da16)
             for wr, p_, q_, y_, ego, extra in (
                     (wg, pos, quat, yaw, ego_g, [f"{v_cmd:.3f}", f"{w_cmd:.3f}", f"{v:.3f}", f"{w:.3f}", min(g_i + 1, len(ends))]),
                     (wa, upos, s["quat"], s["yaw"], ego_a, [*np.round(s["vel"], 3), *np.round(quad.f, 3),
@@ -249,46 +247,55 @@ def main():
                              f"{p_[0] + origin[0]:.3f}", f"{p_[1] + origin[1]:.3f}", f"{p_[2] + origin[2]:.3f}",
                              *np.round(cp_, 4), *np.round(cq_, 5), *extra])
 
-            # ---- overlays (top view: UGV red track / yellow marker, UAV cyan)
-            cv2.polylines(ti, [path_px], False, (255, 200, 0), 2, cv2.LINE_AA)
-            flat = lambda X: np.column_stack([np.asarray(X)[:, :2], np.full(len(X), gz)])  # noqa: E731
-            if len(g_traj) > 1:
-                cv2.polylines(ti, [top.project(flat(u_traj))], False, (0, 220, 255), 5, cv2.LINE_AA)
-                cv2.polylines(ti, [top.project(flat(g_traj))], False, (255, 40, 40), 2, cv2.LINE_AA)
-            for i, p in enumerate(wps):
-                nm = "START" if i == 0 else ("GOAL" if i == len(wps) - 1 else f"WP{i}")
-                col = (40, 220, 40) if i == 0 else ((255, 60, 255) if i == len(wps) - 1 else (255, 200, 0))
-                u = tuple(int(x) for x in top.project([p[0], p[1], gz])[0])
-                cv2.circle(ti, u, 8, col, -1, cv2.LINE_AA); cv2.circle(ti, u, 8, (0, 0, 0), 2, cv2.LINE_AA)
-                label(ti, nm, (u[0] + 11, u[1] + 5), 0.55)
-            for p_, col, nm in ((upos, (0, 220, 255), "UAV"), (pos, (255, 255, 0), "UGV")):
-                u = tuple(int(x) for x in top.project([p_[0], p_[1], gz])[0])
-                cv2.circle(ti, u, 7, col, -1, cv2.LINE_AA); cv2.circle(ti, u, 7, (0, 0, 0), 2, cv2.LINE_AA)
-                label(ti, nm, (u[0] + 10, u[1] - 8), 0.5)
-            cv2.rectangle(ti, (0, 0), (ti.shape[1], 34), (0, 0, 0), -1)
-            label(ti, f"t={t:5.1f}s  UGV {g_dist:5.1f} m wp {min(g_i + 1, len(ends))}/{len(ends)}  |  "
-                      f"UAV {u_dist:5.1f} m AGL {upos[2] - h[r_, c_]:4.1f} m wp {min(max(u_i, 1), len(uends))}/{len(uends)}",
-                  scale=0.6)
-            label(ci, f"third-person  |  collision {a.collision}")
-            if contacts:
-                label(ci, f"UAV CONTACT x{contacts}", (10, 52))
+            if rec:
+                gym.step_graphics(sim)
+                gym.render_all_camera_sensors(sim)
+                ti = top.image(sim)
+                ci = gym.get_camera_image(sim, env, chase, gymapi.IMAGE_COLOR).reshape(cc.height, cc.width, 4)[..., :3].copy()
+                rg, dg16, vg = ego_g.read(sim)
+                ra, da16, va = ego_a.read(sim)
+                valid_g.append(vg); valid_a.append(va)
+                if not a.no_depth_png:
+                    cv2.imwrite(str(out / "depth_ugv" / f"{frame:06d}.png"), dg16)
+                    cv2.imwrite(str(out / "depth_uav" / f"{frame:06d}.png"), da16)
+                # ---- overlays (top view: UGV red track / yellow marker, UAV cyan)
+                cv2.polylines(ti, [path_px], False, (255, 200, 0), 2, cv2.LINE_AA)
+                flat = lambda X: np.column_stack([np.asarray(X)[:, :2], np.full(len(X), gz)])  # noqa: E731
+                if len(g_traj) > 1:
+                    cv2.polylines(ti, [top.project(flat(u_traj))], False, (0, 220, 255), 5, cv2.LINE_AA)
+                    cv2.polylines(ti, [top.project(flat(g_traj))], False, (255, 40, 40), 2, cv2.LINE_AA)
+                for i, p in enumerate(wps):
+                    nm = "START" if i == 0 else ("GOAL" if i == len(wps) - 1 else f"WP{i}")
+                    col = (40, 220, 40) if i == 0 else ((255, 60, 255) if i == len(wps) - 1 else (255, 200, 0))
+                    u = tuple(int(x) for x in top.project([p[0], p[1], gz])[0])
+                    cv2.circle(ti, u, 8, col, -1, cv2.LINE_AA); cv2.circle(ti, u, 8, (0, 0, 0), 2, cv2.LINE_AA)
+                    label(ti, nm, (u[0] + 11, u[1] + 5), 0.55)
+                for p_, col, nm in ((upos, (0, 220, 255), "UAV"), (pos, (255, 255, 0), "UGV")):
+                    u = tuple(int(x) for x in top.project([p_[0], p_[1], gz])[0])
+                    cv2.circle(ti, u, 7, col, -1, cv2.LINE_AA); cv2.circle(ti, u, 7, (0, 0, 0), 2, cv2.LINE_AA)
+                    label(ti, nm, (u[0] + 10, u[1] - 8), 0.5)
+                cv2.rectangle(ti, (0, 0), (ti.shape[1], 34), (0, 0, 0), -1)
+                label(ti, f"t={t:5.1f}s  UGV {g_dist:5.1f} m wp {min(g_i + 1, len(ends))}/{len(ends)}  |  "
+                          f"UAV {u_dist:5.1f} m AGL {upos[2] - h[r_, c_]:4.1f} m wp {min(max(u_i, 1), len(uends))}/{len(uends)}",
+                      scale=0.6)
+                label(ci, f"third-person  |  collision {a.collision}")
+                if contacts:
+                    label(ci, f"UAV CONTACT x{contacts}", (10, 52))
 
-            def tile(rgb, d16, text):
-                im = cv2.resize(rgb, (480, 270), interpolation=cv2.INTER_AREA)
-                dv = cv2.resize(depth_vis(d16, max_m=20.0), (480, 270), interpolation=cv2.INTER_NEAREST)
-                label(im, text, scale=0.5); label(dv, "depth 0-20 m", scale=0.5)
-                return np.vstack([im, dv])
-            writers["topview"].append_data(ti)
-            writers["chase"].append_data(ci)
-            writers["ugv_rgb"].append_data(rg); writers["ugv_depth"].append_data(depth_vis(dg16))
-            writers["uav_rgb"].append_data(ra); writers["uav_depth"].append_data(depth_vis(da16, max_m=20.0))
-            writers["combined"].append_data(np.hstack([ti, np.vstack([ci, np.hstack([
-                tile(rg, dg16, f"UGV ({a.robot}) D455"), tile(ra, da16, f"UAV D455, {a.uav_cam_pitch_deg:.0f} deg down")])])]))
+                def tile(rgb, d16, text):
+                    im = cv2.resize(rgb, (480, 270), interpolation=cv2.INTER_AREA)
+                    dv = cv2.resize(depth_vis(d16, max_m=20.0), (480, 270), interpolation=cv2.INTER_NEAREST)
+                    label(im, text, scale=0.5); label(dv, "depth 0-20 m", scale=0.5)
+                    return np.vstack([im, dv])
+                writers["topview"].append_data(ti)
+                writers["chase"].append_data(ci)
+                writers["ugv_rgb"].append_data(rg); writers["ugv_depth"].append_data(depth_vis(dg16))
+                writers["uav_rgb"].append_data(ra); writers["uav_depth"].append_data(depth_vis(da16, max_m=20.0))
+                writers["combined"].append_data(np.hstack([ti, np.vstack([ci, np.hstack([
+                    tile(rg, dg16, f"UGV ({a.robot}) D455"), tile(ra, da16, f"UAV D455, {a.uav_cam_pitch_deg:.0f} deg down")])])]))
             frame += 1
-        if viewer is not None:
-            if gym.query_viewer_has_closed(viewer):
-                break
-            gym.step_graphics(sim); gym.draw_viewer(viewer, sim, True); gym.sync_frame_time(sim)
+        if viewer is not None and not viewer.step():
+            break
         k += 1
 
     for w_ in writers.values():
@@ -317,7 +324,7 @@ def main():
           f"({g_dist:.1f} m, goal error {g_err:.2f} m) | UAV {'REACHED' if u_done else 'CRASHED' if u_crash else 'TIMEOUT'} "
           f"({u_dist:.1f} m, goal error {u_err:.2f} m, contacts {contacts}) in {frame / FPS:.1f} s -> {out}")
     if viewer is not None:
-        gym.destroy_viewer(viewer)
+        viewer.close()
     gym.destroy_sim(sim)
 
 

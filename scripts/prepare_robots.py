@@ -6,6 +6,9 @@ Sources (cloned into third_party/ if missing):
     warthog: https://github.com/warthog-cpr/warthog (warthog_description, BSD)
     husky  : https://github.com/husky/husky     (husky_description, BSD)
     limo   : AgileX limo_description; pass --limo-desc <path to limo_description>
+    starling (UAV meshes, --starling): https://github.com/BjarkeHJ/AIRLAB_Starling2Max
+             community model of the ModalAI Starling 2 Max; the repo carries NO LICENSE file, so the
+             meshes stay local (assets/robots/starling/ is gitignored) - do not redistribute them
 
     python scripts/prepare_robots.py                       # jackal + husky
     python scripts/prepare_robots.py --limo-desc ~/Documents/limo/agilex_open_class/limo/limo_description
@@ -136,10 +139,37 @@ def convert(name: str, cfg: dict, pkg_dir: Path):
     return info
 
 
+STARLING_REPO = "https://github.com/BjarkeHJ/AIRLAB_Starling2Max.git"
+
+
+def prepare_starling():
+    """Copy the Starling 2 Max body / propeller meshes (mm -> m, normals and materials dropped) to
+    assets/robots/starling/meshes/. umass_lidar/uav.py writes the URDF and uses them when present."""
+    repo = TP / "AIRLAB_Starling2Max"
+    if not repo.exists():
+        TP.mkdir(exist_ok=True)
+        subprocess.run(["git", "clone", "-q", "--depth", "1", STARLING_REPO, str(repo)], check=True)
+    dst = OUT / "starling" / "meshes"
+    dst.mkdir(parents=True, exist_ok=True)
+    for f in ("Starling2Max_body.obj", "Starling2Max_7040prop.obj"):
+        out = []
+        for line in (repo / "models/starling2max_base/meshes" / f).read_text().splitlines():
+            t = line.split()
+            if t and t[0] == "v":
+                out.append("v " + " ".join(f"{float(x) * 1e-3:.6f}" for x in t[1:4]))
+            elif t and t[0] == "f":
+                out.append("f " + " ".join(x.split("/")[0] for x in t[1:]))
+        (dst / f).write_text("\n".join(out) + "\n")
+        print(f"wrote {dst / f} ({sum(l[0] == 'f' for l in out)} faces)")
+
+
 def main():
     ap = argparse.ArgumentParser()
+    ap.add_argument("--starling", action="store_true", help="only fetch the Starling 2 Max UAV meshes")
     ap.add_argument("--limo-desc", default=None, help="path to AgileX limo_description package")
     args = ap.parse_args()
+    if args.starling:
+        return prepare_starling()
     reg_path = OUT / "robots.json"
     reg = json.loads(reg_path.read_text()) if reg_path.exists() else {}
     for name, cfg in ROBOTS.items():

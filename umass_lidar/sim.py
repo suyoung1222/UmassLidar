@@ -170,6 +170,72 @@ class WheeledRobot:
         self.gym.set_actor_dof_velocity_targets(self.env, self.actor, tgt)
 
 
+class FollowViewer:
+    """Interactive viewer whose camera can follow a robot in third person.
+
+    targets: {name: (fn() -> (pos xyz, yaw), distance m)}. Keys: 1..9 follow that target, 0 free
+    camera (normal Isaac Gym mouse / WASD control), LEFT/RIGHT orbit, UP/DOWN zoom, P pause."""
+
+    def __init__(self, gym, sim, env, targets, follow=None):
+        self.gym, self.sim, self.env = gym, sim, env
+        self.viewer = gym.create_viewer(sim, gymapi.CameraProperties())
+        self.targets, self.names = targets, list(targets)
+        self.cur = follow if follow in targets else None
+        self.orbit, self.zoom, self.cam_yaw, self.paused = 0.0, 1.0, None, False
+        keys = {f"KEY_{i + 1}": f"follow{i}" for i in range(min(9, len(self.names)))}
+        keys.update(KEY_0="free", KEY_LEFT="orbit+", KEY_RIGHT="orbit-", KEY_UP="zoom-", KEY_DOWN="zoom+",
+                    KEY_P="pause")
+        for k, name in keys.items():
+            if hasattr(gymapi, k):
+                gym.subscribe_viewer_keyboard_event(self.viewer, getattr(gymapi, k), name)
+        print("[viewer] keys: " + "  ".join(f"{i + 1}=follow {n}" for i, n in enumerate(self.names)) +
+              "  0=free camera  LEFT/RIGHT=orbit  UP/DOWN=zoom  P=pause", flush=True)
+
+    def _events(self):
+        for e in self.gym.query_viewer_action_events(self.viewer):
+            if e.value <= 0:
+                continue
+            if e.action.startswith("follow"):
+                self.cur, self.cam_yaw, self.orbit = self.names[int(e.action[6:])], None, 0.0
+            elif e.action == "free":
+                self.cur = None
+            elif e.action.startswith("orbit"):
+                self.orbit += np.radians(15) * (1 if e.action[-1] == "+" else -1)
+            elif e.action.startswith("zoom"):
+                self.zoom = float(np.clip(self.zoom * (1.25 if e.action[-1] == "+" else 0.8), 0.3, 8.0))
+            elif e.action == "pause":
+                self.paused = not self.paused
+
+    def _draw(self):
+        if self.cur is not None:
+            fn, dist = self.targets[self.cur]
+            pos, yaw = fn()
+            if self.cam_yaw is None:
+                self.cam_yaw = yaw
+            self.cam_yaw += 0.03 * ((yaw - self.cam_yaw + np.pi) % (2 * np.pi) - np.pi)
+            d, a = dist * self.zoom, self.cam_yaw + self.orbit
+            cam = gymapi.Vec3(pos[0] - d * np.cos(a), pos[1] - d * np.sin(a), pos[2] + 0.45 * d)
+            self.gym.viewer_camera_look_at(self.viewer, self.env, cam, gymapi.Vec3(pos[0], pos[1], pos[2] + 0.1 * d))
+        self.gym.step_graphics(self.sim)
+        self.gym.draw_viewer(self.viewer, self.sim, True)
+
+    def step(self, sync=True):
+        """Draw one frame. Returns False once the window is closed."""
+        while True:
+            if self.gym.query_viewer_has_closed(self.viewer):
+                return False
+            self._events()
+            self._draw()
+            if not self.paused:
+                break
+        if sync:
+            self.gym.sync_frame_time(self.sim)
+        return True
+
+    def close(self):
+        self.gym.destroy_viewer(self.viewer)
+
+
 class TopDownCamera:
     """Perspective camera looking straight down, north up / east right, with a simple
     world->pixel projection for drawing overlays."""

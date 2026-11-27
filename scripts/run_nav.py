@@ -1,4 +1,4 @@
-"""Main experiment: waypoint navigation of one wheeled robot (default LIMO) in the digital twin,
+"""Main experiment: waypoint navigation of one wheeled robot (default Warthog) in the digital twin,
 recorded from three viewpoints: top-down, third-person chase, and a RealSense D455-like RGB-D
 camera on the robot.
 
@@ -61,7 +61,7 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--config", default=None, help="session config (default configs/blue_wall.json)")
     ap.add_argument("--variant", default="full", help="twin variant built by build_twin.py")
-    ap.add_argument("--robot", default="limo")
+    ap.add_argument("--robot", default="warthog")
     ap.add_argument("--waypoints", type=float, nargs="+", metavar="X Y", help="x0 y0 x1 y1 ... (start first)")
     ap.add_argument("--utm", action="store_true", help="waypoints are UTM E N")
     ap.add_argument("--speed", type=float, default=None, help="m/s (default: robot max, capped 1.0)")
@@ -76,6 +76,8 @@ def main():
     ap.add_argument("--no-structure-collision", action="store_true", help="same as --collision none")
     ap.add_argument("--out", required=True)
     ap.add_argument("--headless", action="store_true")
+    ap.add_argument("--free-camera", action="store_true",
+                    help="viewer starts with the free camera instead of following the robot (keys 1 / 0 switch)")
     ap.add_argument("--plan-only", action="store_true")
     ap.add_argument("--seed", type=int, default=0)
     a = ap.parse_args()
@@ -124,7 +126,9 @@ def main():
     cc.width, cc.height, cc.horizontal_fov = 960, 540, 70
     chase = gym.create_camera_sensor(env, cc)
     ego = S.RGBDCamera(gym, env, robot, a.cam_pitch_deg)
-    viewer = None if a.headless else gym.create_viewer(sim, gymapi.CameraProperties())
+    viewer = None if a.headless else S.FollowViewer(gym, sim, env, {
+        "ugv": (lambda: (robot.state()[0], robot.state()[2]), max(1.5, 14.0 * rcfg["wheel_radius"]))},
+        None if a.free_camera else "ugv")
 
     writers = {k: imageio.get_writer(out / f"{k}.mp4", fps=FPS, quality=q, macro_block_size=1)
                for k, q in (("topview", 6), ("chase", 7), ("d455_rgb", 8), ("d455_depth", 7), ("combined", 7))}
@@ -237,10 +241,8 @@ def main():
             writers["d455_depth"].append_data(dv)
             writers["combined"].append_data(np.hstack([ti, np.vstack([ci, rgb_s])]))
             frame += 1
-        if viewer is not None:
-            if gym.query_viewer_has_closed(viewer):
-                break
-            gym.step_graphics(sim); gym.draw_viewer(viewer, sim, True); gym.sync_frame_time(sim)
+        if viewer is not None and not viewer.step():
+            break
         k += 1
 
     for w_ in writers.values():
@@ -263,7 +265,7 @@ def main():
     print(f"[done] {status}: planned {route_len:.1f} m, driven {dist:.1f} m in {frame / FPS:.1f} s, "
           f"goal error {err:.2f} m -> {out}")
     if viewer is not None:
-        gym.destroy_viewer(viewer)
+        viewer.close()
     gym.destroy_sim(sim)
 
 
