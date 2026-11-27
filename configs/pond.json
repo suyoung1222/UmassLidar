@@ -1,0 +1,17 @@
+{
+  "name": "pond",
+  "source": "las",
+  "las": "/home/suyoung/Documents/Git/UmassLidar/data/sites/pond.las",
+  "bbox_utm": [
+    703503.35,
+    4695607.95,
+    703928.56,
+    4696103.57
+  ],
+  "crs": "UTM 18N as in the source LAS",
+  "origin": [
+    703503.35,
+    4695607.95,
+    65.4436533263604
+  ]
+}

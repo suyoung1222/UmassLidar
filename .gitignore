@@ -10,3 +10,21 @@ assets/robots/jackal/
 assets/robots/husky/
 assets/robots/limo/
 assets/robots/robots.json
+assets/robots/quad/
+
+# large data / generated binaries: never commit, share separately (e.g. outputs/share/*.tar.gz)
+*.las
+*.laz
+*.e57
+*.vox
+*.npz
+*.npy
+*.glb
+*.mp4
+*.tar
+*.tar.gz
+*.zip
+*.exr
+*.psx
+*.blend
+*.blend1

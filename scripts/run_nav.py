@@ -32,7 +32,7 @@ import numpy as np
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 from umass_lidar import nav, sim as S  # noqa: E402
-from umass_lidar.viz import write_terrain_map  # noqa: E402
+from umass_lidar.viz import depth_vis, label, write_terrain_map  # noqa: E402
 
 FPS = 30
 
@@ -57,18 +57,6 @@ def plan(h, res, sem, pts, rcfg, max_slope, rng, min_len=40.0):
     return np.concatenate(legs), wps, ends
 
 
-def depth_vis(d16, max_m=10.0):
-    v = np.clip(d16.astype(np.float32) / (max_m * 1000.0), 0, 1)
-    img = cv2.applyColorMap((255 - v * 255).astype(np.uint8), cv2.COLORMAP_TURBO)[..., ::-1].copy()
-    img[d16 == 0] = 0
-    return img
-
-
-def label(img, text, org=(10, 24), scale=0.65):
-    cv2.putText(img, text, org, 0, scale, (0, 0, 0), 4, cv2.LINE_AA)
-    cv2.putText(img, text, org, 0, scale, (255, 255, 255), 2, cv2.LINE_AA)
-
-
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--config", default=None, help="session config (default configs/blue_wall.json)")
@@ -82,11 +70,17 @@ def main():
     ap.add_argument("--goal-tol", type=float, default=0.4)
     ap.add_argument("--cam-pitch-deg", type=float, default=0.0, help="D455 pitch, positive = down")
     ap.add_argument("--no-depth-png", action="store_true")
+    ap.add_argument("--collision", choices=("mesh", "voxel", "none"), default="mesh",
+                    help="3D structure collision from build_collision.py: mesh = simplified visual mesh, "
+                         "voxel = closed voxel shell from the points (--mode voxel), none = visual-only")
+    ap.add_argument("--no-structure-collision", action="store_true", help="same as --collision none")
     ap.add_argument("--out", required=True)
     ap.add_argument("--headless", action="store_true")
     ap.add_argument("--plan-only", action="store_true")
     ap.add_argument("--seed", type=int, default=0)
     a = ap.parse_args()
+    if a.no_structure_collision:
+        a.collision = "none"
 
     twin, cfg = S.resolve_twin(a.config, a.variant)
     gprefix = twin.parent / "ground"
@@ -117,7 +111,7 @@ def main():
 
     # ---- sim
     gym, sim, sp = S.make_sim()
-    env, _ = S.add_twin(gym, sim, twin, meta)
+    env, _ = S.add_twin(gym, sim, twin, meta, a.collision)
     yaw0 = float(np.arctan2(*(path[min(5, len(path) - 1)] - path[0])[::-1]))
     robot = S.WheeledRobot(gym, sim, env, a.robot, path[0], yaw0, h, res)
     print(f"[robot] {a.robot} mass={robot.mass:.1f} kg")

@@ -60,18 +60,40 @@ def set_baked_lighting(gym, sim, directional=0.04):
         gym.set_light_parameters(sim, k, gymapi.Vec3(0, 0, 0), gymapi.Vec3(0, 0, 0), gymapi.Vec3(0, 0, 1))
 
 
-def add_twin(gym, sim, twin_dir, meta):
-    """Collision trimesh (2.5D ground + low obstacle stubs) + textured visual tiles
-    (ground tiles and 3D structure tiles, see scripts/build_twin.py). Returns (env, actor)."""
-    twin_dir = Path(twin_dir)
-    mesh = load_glb_zup(twin_dir.parent / "ground.glb")
-    V = np.ascontiguousarray(mesh.vertices, dtype=np.float32)
-    F = np.ascontiguousarray(mesh.faces, dtype=np.uint32)
+def _add_static_mesh(gym, sim, V, F):
+    V = np.ascontiguousarray(V, dtype=np.float32)
+    F = np.ascontiguousarray(F, dtype=np.uint32)
     tp = gymapi.TriangleMeshParams()
     tp.nb_vertices, tp.nb_triangles = len(V), len(F)
     tp.static_friction = tp.dynamic_friction = 1.0
     tp.restitution = 0.0
     gym.add_triangle_mesh(sim, V.flatten(), F.flatten(), tp)
+
+
+COLLISION_FILES = {"mesh": "structure_collision.npz", "voxel": "structure_collision_voxel.npz"}
+
+
+def add_twin(gym, sim, twin_dir, meta, structure_collision="mesh"):
+    """Collision trimesh (2.5D ground + low obstacle stubs) + textured visual tiles
+    (ground tiles and 3D structure tiles, see scripts/build_twin.py). Returns (env, actor).
+    structure_collision: which 3D structure collision to add next to the ground, both from
+    scripts/build_collision.py -- "mesh" (simplified visual mesh, <variant>/structure_collision.npz),
+    "voxel" (closed voxel shell from the point cloud, structure_collision_voxel.npz) or "none".
+    True / False are accepted as "mesh" / "none"."""
+    twin_dir = Path(twin_dir)
+    mesh = load_glb_zup(twin_dir.parent / "ground.glb")
+    _add_static_mesh(gym, sim, mesh.vertices, mesh.faces)
+    mode = {True: "mesh", False: "none", None: "none"}.get(structure_collision, structure_collision)
+    if mode != "none":
+        sc = twin_dir / COLLISION_FILES[mode]
+        if sc.exists():
+            d = np.load(sc)
+            _add_static_mesh(gym, sim, d["V"], d["F"])
+            print(f"[twin] structure collision ({mode}): {len(d['F'])} faces")
+        else:
+            flag = " --mode voxel" if mode == "voxel" else ""
+            print(f"[twin] no {sc.name}; structures are visual-only "
+                  f"(run scripts/build_collision.py{flag} in the processing env)")
 
     o = gymapi.AssetOptions()
     o.fix_base_link = True

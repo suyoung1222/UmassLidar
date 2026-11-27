@@ -1,11 +1,11 @@
 # UmassLidar
 
-UMass Amherst 캠퍼스 LiDAR 데이터로 Isaac Gym용 digital twin을 만들고, 그 안에서 wheeled robot의
-navigation 실험과 주행 데이터 수집을 하는 repo.
+A repo that builds Isaac Gym digital twins from UMass Amherst campus LiDAR data, and runs wheeled-robot
+navigation experiments and driving-data collection inside them.
 
-- **Main pipeline**: 지상 수집 세션(LiDAR + 사진 + INS) → textured digital twin → LIMO waypoint navigation.
-  아래 "RSS2027 Digital Twin" 절 전체가 이 내용이다.
-- **보조 도구**: 항공 LiDAR(`Airborne.las`)에서 장소를 잘라 2.5D terrain을 만드는 초기 실험 코드. 맨 아래 절.
+- **Main pipeline**: ground-collected session (LiDAR + photos + INS) → textured digital twin → LIMO waypoint navigation.
+  The whole "RSS2027 Digital Twin" section below covers this.
+- **Auxiliary tools**: early experimental code that crops a place out of airborne LiDAR (`Airborne.las`) and builds a 2.5D terrain. Last section.
 
 
 # Quick guideline
@@ -13,67 +13,203 @@ navigation 실험과 주행 데이터 수집을 하는 repo.
 
 ```bash
 conda activate umasslidar
-# (최초 1회) 전체 overview 지도 생성
+# (first time only) generate the full overview map
 python scripts/las_overview.py --las ~/Desktop/Airborne.las --out data/overview
-# 지도에서 네모를 그려 그 영역을 LAS로 잘라낸다
+# draw a rectangle on the map and crop that area to a LAS
 python scripts/select_region.py --name library
 ```
 
-- 조작: 왼쪽 drag = 네모(모서리를 끌어 수정), scroll = zoom, 오른쪽 drag = 이동, `Enter` = 잘라내기, `Esc` = 취소.
-- 제목 줄에 크기 / 면적 / 예상 point 수가 나온다. 한계를 넘으면 빨간색이 되고 `Enter`가 거부되니 다시 그린다.
-- 출력: `data/sites/<name>.las` (원본과 같은 형식·좌표계) + `<name>.json` (bbox, 면적, point 수). 20 GB 전체 scan에 약 30초.
-- 기본 한계: 한 변 500 m, 25 ha (RTX 4090 24 GB 기준 추정). `--max-side`, `--max-area`로 바꾼다.
-- 다른 LAS는 `--las`와 `--overview`, 출력 위치는 `--out`.
-- 화면이 없으면(원격) 좌표로 직접: `python scripts/select_region.py --bbox XMIN YMIN XMAX YMAX --name b1`
+- Controls: left drag = rectangle (drag a corner to edit), scroll = zoom, right drag = pan, `Enter` = crop, `Esc` = cancel.
+- The title line shows size / area / estimated point count. Past the limits it turns red and `Enter` is refused, so redraw.
+- Output: `data/sites/<name>.las` (same format and CRS as the source) + `<name>.json` (bbox, area, point count). About 30 s to scan the full 20 GB.
+- Default limits: 500 m per side, 25 ha (estimated for an RTX 4090 24 GB). Change with `--max-side`, `--max-area`.
+- For another LAS use `--las` and `--overview`; output location is `--out`.
+- Without a display (remote), give coordinates directly: `python scripts/select_region.py --bbox XMIN YMIN XMAX YMAX --name b1`
 
 ## 2. Build twin from the region
 
 ```bash
 conda activate umasslidar
-python scripts/build_twin_site.py --las data/sites/library.las      # library 9.9 ha: 수 분
+python scripts/build_twin_site.py --las data/sites/library.las      # library 9.9 ha: a few minutes
+python scripts/build_collision.py --config configs/library.json                # mesh collision for buildings / trees / cars (tens of seconds, also the reference for voxel)
+python scripts/build_collision.py --config configs/library.json --mode voxel   # voxel collision = recommended default (about 2 min, section 6)
 ```
 
-- 입력은 점의 위치와 색뿐이다(사진·센서 궤적 불필요). 첫 실행 때 `configs/library.json`이 만들어지고, 이후 모든 script는 이 config를 쓴다.
-- 출력: `assets/twin/library/` (`ground.glb` 충돌 mesh, `map.png` waypoint용 지도, `full/` tile GLB·PNG·`twin.json`), cache는 `data/library/`.
-- 단계별 cache: 다시 실행하면 export만 돈다(약 10 s). 다시 계산하려면 `--redo ground|cloud|bake`.
-- 일부만 빠르게: `--region X0 Y0 X1 Y1` (local m, `map.png` 좌표) → `crop` variant로 따로 저장된다.
-- 품질 option (바꾸면 `--redo bake`):
-  `--tex-res 0.05` 바닥 texel(점 간격이 약 0.1 m라 더 줄여도 선명해지지 않음), `--smooth 0.07` 점 색 번짐 폭,
-  `--fill 0.6` 나무 밑 등 빈 바닥을 주변 색으로 메우는 폭, `--voxel 0.12` 구조물 mesh 조밀도(작으면 조각남, 크면 뭉개짐),
-  `--min-h 0.4` 이 높이 이상만 3D 구조물.
-- `map.png`의 초록 = 주행 가능. 건물·나무·주차된 차는 장애물로 잡힌다.
+- The input is only point positions and colours (no photos or sensor trajectory needed). The first run creates `configs/library.json`, and every script uses this config afterwards.
+- Output: `assets/twin/library/` (`ground.glb` collision mesh, `map.png` map for waypoints, `full/` tile GLB / PNG / `twin.json`); the cache is `data/library/`.
+- Per-stage cache: running again only does the export (about 10 s). To recompute, use `--redo ground|cloud|bake`.
+- A quick partial build: `--region X0 Y0 X1 Y1` (local m, `map.png` coordinates) → saved separately as the `crop` variant.
+- Quality options (changing them needs `--redo bake`):
+  `--tex-res 0.05` ground texel (point spacing is about 0.1 m, so going lower does not make it sharper), `--smooth 0.07` point colour blur width,
+  `--fill 0.6` width for filling empty ground (under trees etc.) with surrounding colour, `--voxel 0.12` structure mesh density (too small fragments, too large blurs),
+  `--min-h 0.4` only points above this height become 3D structure.
+- Green in `map.png` = drivable. Buildings, trees and parked cars are detected as obstacles.
 
 ## 3. Compare texture using Blender
 
 ```bash
-# 주행 기록 없이: 지도 좌표 (x y yaw°)에 LIMO 카메라 높이로 D455를 놓는다. yaw 0 = 동, 90 = 북
+# Without a driving log: place the D455 at LIMO camera height at map coordinates (x y yaw°). yaw 0 = east, 90 = north
 blender --python scripts/blender_twin.py -- --twin assets/twin/library/full --at 170 150 90
 
-# 창 없이 여러 시점을 still로 (frame 0, 1, ... = --at 순서)
+# Several viewpoints as stills without a window (frame 0, 1, ... = order of --at)
 blender -b --python scripts/blender_twin.py -- --twin assets/twin/library/full \
     --at 170 150 90 --at 150 135 0 --render outputs/blender/library --frames 0 2 1
 
-# 주행 기록이 있으면 그 궤적을 따라간다
+# With a driving log, follow that trajectory
 blender --python scripts/blender_twin.py -- --twin assets/twin/library/full --run outputs/nav/library_000
 ```
 
-- `Numpad 0` = D455 시점, viewport shading은 Material Preview. 색 관리는 `Standard`로 둔다.
-- 색 조정: Shader editor에서 `TwinShade` group 안의 `Gain` / `Saturation` / `Gamma` 값을 바꾸면 전체 tile에 즉시 반영된다.
-  정한 값을 `configs/library.json`에 `"grade": {"gain": 1.2, "saturation": 1.1, "gamma": 0.95}`로 적고 2번 명령을 다시 실행하면
-  texture에 구워진다. 그 뒤 Blender에서는 knob을 1로 되돌리고 `for im in bpy.data.images: im.reload()`.
-- 출처 확인: `ShowSource`를 1로. 파랑 = 점 색, 연파랑 = 주변 색으로 메운 곳, 주황 = 색 정보 없음(재질 평균색).
-- mesh / 해상도 option을 바꿨을 때는 `--region`으로 작게 구워 `--twin assets/twin/library/crop`을 같은 `--at`으로 렌더해 비교한다.
-- 전체 설명과 parameter 표: [docs/blender_tuning.md](docs/blender_tuning.md)
+- `Numpad 0` = D455 view; viewport shading is Material Preview. Leave colour management at `Standard`.
+- Colour adjustment: in the Shader editor, changing `Gain` / `Saturation` / `Gamma` inside the `TwinShade` group applies to all tiles immediately.
+  Write the chosen values into `configs/library.json` as `"grade": {"gain": 1.2, "saturation": 1.1, "gamma": 0.95}` and rerun the commands of step 2
+  to bake them into the textures. After that, set the knobs back to 1 in Blender and run `for im in bpy.data.images: im.reload()`.
+- Checking the source: set `ShowSource` to 1. Blue = point colour, light blue = filled with surrounding colour, orange = no colour information (material mean colour).
+- When mesh / resolution options change, bake a small area with `--region` and render `--twin assets/twin/library/crop` with the same `--at` to compare.
+- Full description and parameter table: [docs/blender_tuning.md](docs/blender_tuning.md)
 
 ## 4. Run navigation
 
 ```bash
 conda activate gleam && export LD_LIBRARY_PATH=$CONDA_PREFIX/lib:$LD_LIBRARY_PATH
+# structure collision: voxel (recommended default, collision with holes filled, structure_collision_voxel.npz)
 python scripts/run_nav.py --config configs/library.json --waypoints 150 140 190 130 215 100 240 60 \
-    --out outputs/nav/library_000 --headless
+    --out outputs/nav/library_000 --headless --collision voxel
+# structure collision: mesh (collision simplified from the visual mesh. This is what you get if --collision is omitted)
+python scripts/run_nav.py --config configs/library.json --waypoints 150 140 190 130 215 100 240 60 \
+    --out outputs/nav/library_000_mesh --headless --collision mesh
+# no structure collision (structures are visual only, collision is ground + 0.6 m stubs)
+python scripts/run_nav.py --config configs/library.json --waypoints 150 140 190 130 215 100 240 60 \
+    --out outputs/nav/library_000_none --headless --collision none
 ```
 
-- waypoint는 `assets/twin/library/map.png`에서 읽은 local m (첫 점이 출발점). `--plan-only`로 경로만 먼저 확인할 수 있다.
+- `--collision {mesh,voxel,none}`: the visual mesh (`s_*.glb`) is the same in all three cases and only the collision shape changes (section 6). Same for `run_uav.py`.
+
+- Waypoints are local m read from `assets/twin/library/map.png` (the first point is the start). `--plan-only` lets you check the path first.
+
+## 5. Run UAV (quadrotor)
+
+```bash
+conda activate gleam && export LD_LIBRARY_PATH=$CONDA_PREFIX/lib:$LD_LIBRARY_PATH
+# structure collision: voxel (recommended default)
+python scripts/run_uav.py --waypoints 95 150  103 166  125 172  138 168 \
+    --out outputs/uav/run_000 --headless --collision voxel    # same for other twins, e.g. --config configs/library.json
+# no structure collision (for mesh collision use --collision mesh or omit it)
+python scripts/run_uav.py --waypoints 95 150  103 166  125 172  138 168 \
+    --out outputs/uav/run_000_nocol --headless --collision none
+# collision test: fly low, ignoring structure height (when ON, it is blocked by the wall of the box structure)
+python scripts/run_uav.py --waypoints 104 171 130 171 --agl 1.5 --clearance -100 --speed 2 --max-seconds 40 \
+    --out outputs/uav/box_on --headless
+```
+
+- Takes off at the first waypoint and flies each leg at a constant altitude: `max(ground + --agl (6 m), structure surface + --clearance (2 m))`.
+  The structure surface is the height obtained by rasterizing the twin's `s_*.glb` tiles (`<variant>/structure_top.npy`, computed once and cached), widened by 1.5 m.
+- Going below the structure height is recorded as `structure_hit`; an actual collision is recorded as `contact_steps` / `first_contact`
+  (actual collisions only when the `structure_collision.npz` of section 6 exists).
+- Camera: the same RGB-D as the D455, mounted under the nose, `--cam-pitch-deg` (default 30° down), `--depth-max` (default 20 m).
+- Output is the same as `run_nav.py` (`combined.mp4`, `d455_rgb/depth.mp4`, `depth/*.png` uint16 mm, `trajectory.csv` with rotor thrust and AGL added, `result.json`).
+- Vehicle model (`umass_lidar/uav.py`): 1 kg X-quad, 4 rotors of at most 6 N each (thrust/weight about 2.4), first-order motor lag 30 ms, linear drag.
+  Isaac Gym has no rotor model, so every step the summed force and torque of the 4 rotor thrusts are applied directly to the body.
+  There are three levels of input usable as an RL action: `Quadrotor.apply_motors(f)` (rotor thrusts),
+  `QuadController.ctbr(T, rates)` (collective thrust + body rate), `QuadController.velocity(v, yaw)` (velocity command, what waypoint flight uses).
+
+**Verification (`outputs/uav/run_000`, blue_wall)**: all 3 waypoints reached (takeoff 4.1 s, 12.0 / 22.0 / 28.6 s), planned 60.8 m / flown 60.7 m,
+goal error 0.11 m, maximum path deviation 0.29 m, 857 frames, 77% valid depth pixels.
+
+## 5b. Run UGV + UAV together
+
+```bash
+conda activate gleam && export LD_LIBRARY_PATH=$CONDA_PREFIX/lib:$LD_LIBRARY_PATH
+python scripts/run_team.py --config configs/library.json --waypoints 150 140 190 130 215 100 240 60 \
+    --out outputs/team/library_voxel --headless --collision voxel     # or --collision mesh / none
+python scripts/run_team.py --waypoints 95 150  103 166  125 172  138 168 \
+    --out outputs/team/blue_wall_voxel --headless --collision voxel   # snowy bluewall (configs/blue_wall.json)
+python scripts/run_team.py --config configs/blue_wall_aerial.json --waypoints 95 150  103 166  125 172  138 168 \
+    --out outputs/team/blue_wall_aerial_voxel --headless --collision voxel
+```
+
+- The LIMO and the quadrotor follow the same waypoints along the same A* ground path in one sim. The UAV flies above that path
+  at height `max(ground + --agl (5 m), structure surface + --clearance (2 m))` (smoothly interpolated along the path).
+- The default `--uav-speed` equals the UGV speed (they move side by side). The UAV takes off 1.5 m behind the UGV start point.
+- Output: `combined.mp4` (map seen from above + third person + D455 RGB/depth of both robots), `topview.mp4`, `chase.mp4`,
+  `ugv_rgb/depth.mp4`, `uav_rgb/depth.mp4`, `depth_ugv/`, `depth_uav/`, `trajectory_ugv.csv`, `trajectory_uav.csv`, `result.json`.
+
+## 6. Structure collision (mesh collision for buildings / trees / cars)
+
+```bash
+conda activate umasslidar
+# two lines per twin: mesh mode (a few seconds) → voxel mode (1–2 min). At run time use --collision voxel (recommended default)
+python scripts/build_collision.py                                              # blue_wall
+python scripts/build_collision.py --mode voxel
+python scripts/build_collision.py --config configs/blue_wall_aerial.json
+python scripts/build_collision.py --config configs/blue_wall_aerial.json --mode voxel
+python scripts/build_collision.py --config configs/library.json
+python scripts/build_collision.py --config configs/library.json --mode voxel
+python scripts/build_collision.py --config configs/library.json --variant crop   # when using the crop variant (same for --mode voxel)
+```
+
+**Why voxel is the recommended default (summary)**
+
+- Problem: the mesh collision is a simplified copy of the visual mesh. The visual mesh cuts away "faces far from points" after Poisson reconstruction,
+  so holes appear on walls and lower parts of buildings where LiDAR / photo points are sparse, and those holes stay in the collision as they are (a robot can pass through a wall).
+- How voxel works: without going through the visual mesh, the point cloud is filled directly into a 12.5 cm lattice (a cell is blocked if it holds even one point),
+  gaps of about 0.75 m or less are filled by morphological closing (dilation then erosion), and the outer surface of that blob is used as the collision mesh.
+  There is no step that "estimates and connects" a surface, so even sparse places are blocked as far as there are points, and the result is always a closed shell.
+- Why it is only a partial fix: holes larger than 0.75 m (places with no points at all, e.g. a wall under eaves in a point cloud captured only from above) remain.
+- Numeric example (library, building tile 280–300 / 220–240 m): among points in the robot height band (0.4–2.5 m above ground), the fraction within
+  0.25 m of the collision surface goes from mesh 28.9% → voxel 95.4%, and the hole boundary length (open edge) from 299 m → 0 m.
+
+- The 3D structure tiles (`s_*.glb`) are originally visual only. This script turns all tiles into one static collision mesh
+  (`<variant>/structure_collision.npz`). Processing: keep only the outward one of the double-sided faces, remove small pieces (fewer than 60 faces or smaller than 0.4 m),
+  quadric decimation to 12% of the faces (`fast_simplification`), and push in by 6 cm against the surface normal.
+  Isaac Gym draws collision meshes in grey, so pushing them inward hides them behind the textured surface.
+- `run_nav.py` / `run_uav.py` turn collision on automatically when this file exists (`--collision mesh`, the default). To turn it off use `--collision none`
+  (`--no-structure-collision` is kept with the same meaning).
+- `run_uav.py` detects collisions by contact force and records them in `result.json` as `contact_steps`, `first_contact`, `blocked`.
+- blue_wall: 4.13 M → 0.53 M faces, 8 s. Pixels where the grey collision mesh showed through in the D455 video were below 0.1%
+  (comparing ON/OFF frames of the same route).
+
+### Voxel collision (`--mode voxel`): collision without holes
+
+```bash
+conda activate umasslidar
+python scripts/build_collision.py --config configs/library.json                 # mesh mode first (the reference for hiding voxel faces)
+python scripts/build_collision.py --config configs/library.json --mode voxel    # → <variant>/structure_collision_voxel.npz
+# usage: run_nav.py / run_uav.py --collision voxel
+```
+
+- Why: mesh mode simplifies the visual mesh as is, so holes in the visual mesh caused by sparse points stay in the collision.
+  Voxel mode does not use the visual mesh and builds directly from the point cloud. The visual mesh (`s_*.glb`) and the mesh-mode file are not changed;
+  the two collision files sit side by side and you pick one at run time with `--collision {mesh,voxel,none}`.
+- Processing: points at least `--min-h` (0.3 m) above ground → occupancy on a `--voxel` (0.125 m) lattice → morphological closing (`--close` 0.375 m,
+  fills gaps of about 0.75 m or less) → remove detached pieces smaller than `--min-voxels` (12) → voxel boundary faces → decimation to 12% of the faces.
+- Input point cloud: `data/<name>/cloud.npz` (aerial / site twin) or `data/<name>/tiles/*.vox` (LiDAR twin). Confirmed working on all three twins.
+- Hiding faces (default, turn off with `--no-hide`): the voxel shell lies up to 1 voxel outside the real surface, so it shows as grey in Isaac Gym.
+  Vertices in front of the mesh-mode surface are moved onto that surface. Places without a visual mesh (holes) are left as they are, so holes are plugged by grey faces.
+- Limits: holes larger than 0.75 m remain (walls under eaves in a point cloud seen only from above, etc.). Real gaps narrower than 0.75 m are also closed.
+  Small isolated point clusters (fewer than 12 voxels) are dropped from the collision. The face count is about 5 times that of mesh mode.
+
+**Test (library, three 20 m tiles with many holes)**: "fraction of points more than 0.25 m away from the collision surface" (lower is better) and hole boundary length.
+
+| Region (local m) | Content | Uncovered points, all (mesh → voxel) | Uncovered points, 0.4–2.5 m above ground | Hole boundary (open edge) |
+|---|---|---|---|---|
+| A: 100–140, 20–40 | low, sparse points | 61.0% → 25.6% | 60.1% → 24.9% | 287 m → 0 m |
+| B: 280–300, 140–160 | tall building | 11.5% → 0.6% | 64.9% → 3.8% | 581 m → 0 m |
+| C: 280–300, 220–240 | building | 14.0% → 0.5% | 71.1% → 4.6% | 299 m → 0 m |
+
+- The 25% left in A are small isolated point clusters filtered out by `--min-voxels` (`--min-voxels 1` keeps them, but noise comes in too).
+- Whole library: 12.3 M points → 7.57 M voxels (2.78 M of them filled by closing) → 3.89 M faces, 100 s.
+- Driving the same route (141.5 m) with `run_nav.py`: `none` / `mesh` / `voxel` all reach the goal with identical distance and time (the route does not touch structures).
+  Pixels where D455 depth became nearer than `none`: mesh 0.11%, voxel 1.20% (of which more than 0.3 m nearer = plugged holes 0.70%,
+  0.3 m or less = slight protrusion in front of the visual surface 0.50%). Before hiding faces 15.3% of RGB pixels changed; after hiding, 3.3% (mesh 0.3%).
+
+**Examples** (UAV deliberately sent below structure height: `--clearance -100`):
+
+| Example | Command | collision ON | OFF |
+|---|---|---|---|
+| Tree canopy (3 m above ground) | `--waypoints 106 180 106 218 --agl 3` | contact at (106, 195.1) at 11.1 s → flips and crashes | passes through the tree and reaches the goal |
+| 3 m high box structure (1.5 m above ground) | `--waypoints 104 171 130 171 --agl 1.5` | stopped by the wall at x=114.8 (BLOCKED) | passes through |
+
+Comparison videos: `outputs/uav/tree_compare.mp4`, `outputs/uav/box_compare.mp4` (left ON, right OFF, third person).
 
 
 
@@ -82,21 +218,21 @@ python scripts/run_nav.py --config configs/library.json --waypoints 150 140 190 
 ## 1. 2026 03 07 snowy bluewall
 Sensors: Inertial Labs RESEPI + Hesai 32ch LiDAR + Sony a5100
 Data (https://drive.google.com/drive/u/1/folders/1MhfiWRgno-qihtz96PdWmms9i4fMCdGZ):
-2026-03-07-18-07-32 (24 GB)	33분 주행, 사진 796장	PPK 후처리까지 끝남. 메인 세션
-2026-03-04-23-35-52 (1.5 GB)	20초, 사진 11장, lidar.scan 94 MB	raw만 있음 (ppk.txt 없음). 테스트 촬영임.
+2026-03-07-18-07-32 (24 GB)	33 min run, 796 photos	PPK post-processing finished. Main session
+2026-03-04-23-35-52 (1.5 GB)	20 s, 11 photos, lidar.scan 94 MB	raw only (no ppk.txt). A test capture.
 
 ```bash
-camera/<serial>_<t0>_<t1>.jpg   796장, 6000×4000, Sony ILCE-5100
-                                t는 µs, t/1e6 − 1e9 = LAS gps_time. EXIF orientation=3 (180° 회전)
-ins/ppk.txt                     PPK 궤적 125 Hz: Week GPSTime UTCTime Lon Lat H-Ell Heading Pitch Roll
-ins/trajectories/ppk/*.txt      같은 궤적을 geoid만 바꿔 5벌 (WGS84 ellipsoid, GEOID18 등)
-ins/SBET.OUT                    같은 궤적 (SBET binary)
-ins/*-imu.imr, *-gnss.gps 외     raw IMU/GNSS와 Waypoint Inertial Explorer 중간 파일
-data/hamp0660.*, igu*.sp3       PPK 베이스국 데이터 (CORS 'hamp', RINEX obs/nav, 정밀 궤도력)
-data/RESEPI-*.data (57개, 15 GB) 장비 raw 로그
-processed_ppk.pcmp              LiDAR lever arm, boresight, 장착각(pitch −45°), 레이저별 보정
-processed_ppk.pcpp              카메라 lever arm (0, −0.08, −0.048), boresight, 장착 −45°, 사진 목록
-log.txt                         수집 요약: GNSS 위성 수(21–25개가 70%), IMU 통계, range 필터 8–200 m
+camera/<serial>_<t0>_<t1>.jpg   796 photos, 6000×4000, Sony ILCE-5100
+                                t is in µs, t/1e6 − 1e9 = LAS gps_time. EXIF orientation=3 (rotated 180°)
+ins/ppk.txt                     PPK trajectory 125 Hz: Week GPSTime UTCTime Lon Lat H-Ell Heading Pitch Roll
+ins/trajectories/ppk/*.txt      5 copies of the same trajectory differing only in geoid (WGS84 ellipsoid, GEOID18 etc.)
+ins/SBET.OUT                    the same trajectory (SBET binary)
+ins/*-imu.imr, *-gnss.gps etc.  raw IMU/GNSS and Waypoint Inertial Explorer intermediate files
+data/hamp0660.*, igu*.sp3       PPK base station data (CORS 'hamp', RINEX obs/nav, precise ephemeris)
+data/RESEPI-*.data (57 files, 15 GB) raw device logs
+processed_ppk.pcmp              LiDAR lever arm, boresight, mount angle (pitch −45°), per-laser corrections
+processed_ppk.pcpp              camera lever arm (0, −0.08, −0.048), boresight, mount −45°, photo list
+log.txt                         collection summary: GNSS satellite count (21–25 for 70%), IMU statistics, range filter 8–200 m
 ```
 
 ## 2. Airborne.las EE2023
@@ -104,17 +240,17 @@ Sensors: Inertial Labs RESEPI + Hesai 32ch LiDAR + DJI drone camera
 Data (https://drive.google.com/drive/u/1/folders/1kBTbf2Wi2AtV4I8o0_BCfMtxHIy65xED):
 
 ```bash
-Aerial Images/RegionXX/DJI_*.JPG   25개 region, 사진 12,514장
-    대부분 Mavic 2 Pro (5472×3648, RTK 없음, 고도 약 122 m), 수직 촬영(nadir)
-    Region17/18/19/23/24/25/26/WEB는 경사 촬영 (gimbal −65°)
-    Region08_09_10_15_16만 Mavic 3E + PPK 파일 (.nav/.obs/Timestamp)
+Aerial Images/RegionXX/DJI_*.JPG   25 regions, 12,514 photos
+    mostly Mavic 2 Pro (5472×3648, no RTK, altitude about 122 m), vertical (nadir) capture
+    Region17/18/19/23/24/25/26/WEB are oblique captures (gimbal −65°)
+    only Region08_09_10_15_16 is Mavic 3E + PPK files (.nav/.obs/Timestamp)
 AlignedChunksViaPointClouds/
     *_SubregionSet_1.psx/.files   chunk 17(R29), 18(R22), 38(R36_37_38_44), 40/41 merged
     *_SubregionSet_2_*.psx/.files chunk 10(R26), 14(R25), 15(R24), 16(R23), 37–39 merged
-      각 chunk: chunk.zip/doc.xml (정렬된 카메라 pose, calibration, chunk→ECEF 변환)
-                0/depth_maps (EXR, 원본의 1/8 해상도), dense_cloud (proprietary .oc3)
-                point_cloud (tie points), merged chunk에는 elevation (DEM)
-    transects.shp, Set2_Chunks*.png (GCP 정렬 전후 스크린샷)
+      each chunk: chunk.zip/doc.xml (aligned camera poses, calibration, chunk→ECEF transform)
+                0/depth_maps (EXR, 1/8 of the original resolution), dense_cloud (proprietary .oc3)
+                point_cloud (tie points), merged chunks also have elevation (DEM)
+    transects.shp, Set2_Chunks*.png (screenshots before/after GCP alignment)
 ```
 
 
@@ -122,8 +258,8 @@ AlignedChunksViaPointClouds/
 
 # RSS2027 Digital Twin (main pipeline)
 
-RESEPI payload로 걸어서 수집한 세션 하나를 입력으로 받아, 사진을 입힌 3D 환경을 만들고
-Isaac Gym에서 LIMO 1대를 waypoint로 주행시키며 **탑뷰 / 3인칭 / RealSense D455 RGB-D** 세 시점을 기록한다.
+Takes one session collected on foot with a RESEPI payload as input, builds a photo-textured 3D environment, and
+drives one LIMO through waypoints in Isaac Gym while recording three views: **top view / third person / RealSense D455 RGB-D**.
 
 ```
 RESEPI session                         build_twin.py (env: umasslidar)                run_nav.py (env: gleam)
@@ -136,305 +272,314 @@ RESEPI session                         build_twin.py (env: umasslidar)          
                                     └──────────────────────────────────────┘      └─────────────────────────┘
 ```
 
-## 1. 실행 방법
+## 1. How to run
 
 ```bash
-# 0) (최초 1회) robot URDF 준비
+# 0) (first time only) prepare robot URDFs
 conda activate umasslidar
 python scripts/prepare_robots.py
 
-# 1) Digital twin build — 처리 env. 단계별로 cache되므로 다시 실행하면 빠진 단계만 돈다.
-python scripts/build_twin.py                       # configs/blue_wall.json, 전체 영역
-python scripts/build_twin.py --region 85 170 115 200 --name crop   # 30 m 구역만 빠르게 시험
-python scripts/eval_vo.py                          # (선택) 사진만으로 SfM → INS와 비교
+# 1) Digital twin build — processing env. Cached per stage, so a rerun only does the missing stages.
+python scripts/build_twin.py                       # configs/blue_wall.json, whole area
+python scripts/build_twin.py --region 85 170 115 200 --name crop   # quick test on a 30 m area only
+python scripts/eval_vo.py                          # (optional) SfM from photos only → compare with INS
+python scripts/build_collision.py                  # structure mesh collision (8 s). With crop, also --variant crop
+python scripts/build_collision.py --mode voxel     # structure voxel collision (47 s, recommended default. Section 6)
 
 # 2) Navigation — Isaac Gym env
 conda activate gleam
 export LD_LIBRARY_PATH=$CONDA_PREFIX/lib:$LD_LIBRARY_PATH
 python scripts/run_nav.py --waypoints 95 150  103 166  125 172  138 168 \
-    --out outputs/nav/run_000 --headless
+    --out outputs/nav/run_000 --headless --collision voxel                  # voxel collision (recommended default)
+python scripts/run_nav.py --waypoints 95 150  103 166  125 172  138 168 \
+    --out outputs/nav/run_000_nocol --headless --collision none             # OFF (for mesh collision use --collision mesh or omit it)
 ```
 
-- Waypoint 좌표는 local metre다. `assets/twin/blue_wall/map.png`(초록 = 주행 가능, 격자 10 m)에서 읽는다.
-  UTM으로 주려면 `--utm`. 첫 점이 출발점이고, 주행 불가이거나 장애물에 붙은 지점은 1 m 여유가 있는
-  가까운 cell로 옮겨진다 (옮긴 거리를 출력).
-- `--plan-only`: sim 없이 `plan.png`만 만든다. `--headless`를 빼면 viewer 창이 뜬다.
-- `--robot {limo,jackal,husky}`, `--speed`, `--cam-pitch-deg`(D455 아래 방향 각도), `--variant crop`.
-- 다른 세션을 쓰려면 `configs/<name>.json`을 만들고 `--config`로 넘긴다 (`session_dir`, `las`, `bbox_utm`, `origin`).
+- Waypoint coordinates are in local metres. Read them from `assets/twin/blue_wall/map.png` (green = drivable, 10 m grid).
+  Use `--utm` to give them in UTM. The first point is the start, and points that are not drivable or touch an obstacle are moved
+  to a nearby cell with 1 m of margin (the moved distance is printed).
+- `--plan-only`: only makes `plan.png`, without the sim. Without `--headless` a viewer window opens.
+- `--collision {mesh,voxel,none}`: 3D structure collision shape (section 6). `none` leaves only the visual (this is also the state when the corresponding npz file is missing).
+- `--robot {limo,jackal,husky}`, `--speed`, `--cam-pitch-deg` (D455 downward angle), `--variant crop`.
+- To use another session, create `configs/<name>.json` and pass it with `--config` (`session_dir`, `las`, `bbox_utm`, `origin`).
 
-`run_nav.py` 출력 (`--out` 폴더):
+`run_nav.py` output (`--out` folder):
 
-| 파일 | 내용 |
+| File | Content |
 |---|---|
-| `combined.mp4` | 탑뷰 + 3인칭 + D455 RGB(depth inset)를 한 화면에 |
-| `topview.mp4`, `chase.mp4` | 탑뷰(계획 경로·주행 궤적 overlay), 3인칭 follow |
-| `d455_rgb.mp4`, `d455_depth.mp4`, `depth/*.png` | 1280×720, 30 fps, HFOV 87°. depth는 uint16 mm (0 = 범위 밖, 0.52–20 m) |
-| `trajectory.csv` | frame별 robot pose, camera pose, UTM, 명령·측정 속도 |
-| `plan.png`, `result.json`, `route.npy` | 계획 경로 지도, waypoint별 도달 시각·거리, camera intrinsic |
+| `combined.mp4` | top view + third person + D455 RGB (depth inset) in one frame |
+| `topview.mp4`, `chase.mp4` | top view (planned path and driven trajectory overlay), third-person follow |
+| `d455_rgb.mp4`, `d455_depth.mp4`, `depth/*.png` | 1280×720, 30 fps, HFOV 87°. depth is uint16 mm (0 = out of range, 0.52–20 m) |
+| `trajectory.csv` | per-frame robot pose, camera pose, UTM, commanded and measured velocity |
+| `plan.png`, `result.json`, `route.npy` | planned path map, arrival time and distance per waypoint, camera intrinsics |
 
-## 2. 데이터셋 구조 (`~/mydata/worldmodel/rss2027`)
+## 2. Dataset structure (`~/mydata/worldmodel/rss2027`)
 
-Inertial Labs **RESEPI** (A84717) mobile mapping payload를 들고 걸으며 수집한 데이터.
+Data collected while walking with an Inertial Labs **RESEPI** (A84717) mobile mapping payload.
 
-| 센서 | 내용 |
+| Sensor | Content |
 |---|---|
-| LiDAR | Hesai PandarXT32 (32 laser, 10 Hz). spin axis가 body 기준 앞-아래 45° |
-| 카메라 | Sony a5100, 16 mm, 6000×4000. 앞-아래 45°. gphoto **software trigger**, 약 2.5 s 간격 |
-| INS | NovAtel OEM7720 GNSS + IMU 200 Hz. HAMP CORS 기준국으로 PPK (tightly coupled) |
+| LiDAR | Hesai PandarXT32 (32 lasers, 10 Hz). Spin axis is 45° forward-down in the body frame |
+| Camera | Sony a5100, 16 mm, 6000×4000. 45° forward-down. gphoto **software trigger**, about 2.5 s interval |
+| INS | NovAtel OEM7720 GNSS + IMU 200 Hz. PPK (tightly coupled) with the HAMP CORS base station |
 
-| 경로 | 내용 | 사용 |
+| Path | Content | Used |
 |---|---|---|
-| `RESEPI-…-03-07-18-07-32/` | **메인 세션**. 33분, 2.1 km 보행(평균 1.06 m/s), 110 × 147 m | ✔ |
-| `  ins/ppk.txt` | 후처리 trajectory 125 Hz: GPSTime, lon, lat, 타원체고, heading, pitch, roll | ✔ |
-| `  ins/SBET.OUT`, `*-imu.imr` | 같은 trajectory의 200 Hz binary, raw IMU | — |
-| `  camera/<serial>_<t0>_<t1>.jpg` | 사진 796장. `t/1e6 − 1e9` = LAS `gps_time` (노출 시작·끝, µs) | ✔ |
-| `  processed_ppk.pcmp / .pcpp` | LiDAR·카메라 lever arm, boresight, lens `FOV=24.55`, CRS | ✔ (초기값) |
-| `  data/` | raw 로그 57개, 기준국 RINEX | — |
-| `lidar-003.scan` (8 GB) | 메인 세션의 raw scan (PCMaster 전용 포맷) | — |
-| `RESEPI-…-03-04-*` 2개 | 짧은 테스트 기록, 후처리 trajectory 없음 | — |
-| `../bluewall/blue_wall.las` (16 GB) | **메인 세션을 PCMasterProGL로 georeference한 결과**. 443 M pts, UTM 18N + 타원체고. `gps_time`, `point_source_id`(= laser 번호 0–31), intensity, RGB(37%만 유색) | ✔ |
+| `RESEPI-…-03-07-18-07-32/` | **Main session**. 33 min, 2.1 km walk (mean 1.06 m/s), 110 × 147 m | ✔ |
+| `  ins/ppk.txt` | post-processed trajectory 125 Hz: GPSTime, lon, lat, ellipsoidal height, heading, pitch, roll | ✔ |
+| `  ins/SBET.OUT`, `*-imu.imr` | 200 Hz binary of the same trajectory, raw IMU | — |
+| `  camera/<serial>_<t0>_<t1>.jpg` | 796 photos. `t/1e6 − 1e9` = LAS `gps_time` (exposure start / end, µs) | ✔ |
+| `  processed_ppk.pcmp / .pcpp` | LiDAR / camera lever arm, boresight, lens `FOV=24.55`, CRS | ✔ (initial values) |
+| `  data/` | 57 raw logs, base station RINEX | — |
+| `lidar-003.scan` (8 GB) | raw scan of the main session (PCMaster-only format) | — |
+| `RESEPI-…-03-04-*` (2) | short test recordings, no post-processed trajectory | — |
+| `../bluewall/blue_wall.las` (16 GB) | **The main session georeferenced with PCMasterProGL**. 443 M pts, UTM 18N + ellipsoidal height. `gps_time`, `point_source_id` (= laser number 0–31), intensity, RGB (only 37% coloured) | ✔ |
 
-확인한 사실:
+Facts confirmed:
 
-- LAS의 `gps_time`과 trajectory 시각이 같은 축이라, **포인트마다 그것을 쏜 센서 위치**를 복원할 수 있다.
-- LAS는 trajectory 대비 **(−3.456, −4.822, −0.088) m 일정하게 이동**돼 있다 (원인 미확인, open question).
-  이 값을 넣으면 LiDAR ring 잔차가 3.3° → 0.008°가 된다 (아래 3.1).
-- Intensity는 0–255 중 1 / 13 / 63 (1% / 중앙값 / 99%)에 몰려 있고, laser별 중앙값은 11–15로 거의 균일하다.
-- **905 nm intensity와 사진 밝기의 상관계수는 −0.07**이다. Intensity로 색이나 밝기를 직접 만들 수 없다.
-- 바닥 대부분이 **규칙적인 포장 타일**이다. 사진 간 feature matching이 타일 한 칸씩 밀린 가짜 대응을 만든다.
+- The LAS `gps_time` and the trajectory time share the same axis, so **the sensor position that fired each point** can be recovered.
+- The LAS is **shifted by a constant (−3.456, −4.822, −0.088) m** relative to the trajectory (cause not confirmed, open question).
+  With this value the LiDAR ring residual goes from 3.3° → 0.008° (3.1 below).
+- Intensity is concentrated at 1 / 13 / 63 (1% / median / 99%) out of 0–255, and the per-laser median is nearly uniform at 11–15.
+- **The correlation coefficient between 905 nm intensity and photo brightness is −0.07.** Colour or brightness cannot be made directly from intensity.
+- Most of the ground is **regular paving tiles**. Feature matching between photos produces false correspondences shifted by one tile.
 
-## 3. Pipeline 원리
+## 3. Pipeline principles
 
-### 3.1 LAS ↔ trajectory 정합 (`umass_lidar/resepi.py`)
+### 3.1 LAS ↔ trajectory registration (`umass_lidar/resepi.py`)
 
-Spinning LiDAR의 laser 하나는 spin axis 둘레의 원뿔을 그린다. Body frame에서 (포인트 방향 · spin axis)가
-laser별로 일정해야 한다는 조건으로, LAS와 trajectory 사이의 world offset·spin axis·laser elevation을 함께 푼다.
-이 검사가 body 자세 convention(x 오른쪽, y 앞, z 위; `Rz(−heading)·Rx(pitch)·Ry(roll)`)의 검증도 겸한다.
-결과: spin axis = (0, 0.709, −0.705), laser elevation 12.9° … −14.8° (XT32 사양과 일치).
+One laser of a spinning LiDAR traces a cone around the spin axis. Using the condition that (point direction · spin axis) in the body frame
+must be constant per laser, the world offset between LAS and trajectory, the spin axis and the laser elevations are solved together.
+This check also verifies the body attitude convention (x right, y forward, z up; `Rz(−heading)·Rx(pitch)·Ry(roll)`).
+Result: spin axis = (0, 0.709, −0.705), laser elevation 12.9° … −14.8° (matches the XT32 spec).
 
-### 3.2 카메라 calibration (`umass_lidar/camera.py`)
+### 3.2 Camera calibration (`umass_lidar/camera.py`)
 
 ```
 Xc = dR_i · R(rvec) · R_CB0 · R_wb(t_i)ᵀ · (Xw − (p_b(t_i) + R_wb · lever)) + dt_i
 u  = f · x/z · (1 + k1 r² + k2 r⁴) + cx
 ```
 
-1. **장착 방향** `R_CB0`: 축 조합 72가지를 "사진 밝기 vs PCMaster가 입힌 포인트 색" 상관으로 탐색 (정답 0.45, 나머지 ≤ 0.09).
-2. **사진 ↔ LiDAR map 정합**: LiDAR 포인트를 사진 시점으로 렌더한 이미지와 사진을 block matching해서
-   2D–3D 대응을 만든다. 반복 타일 때문에 peak가 유일하지 않은 block은 버린다.
-3. **전역 최적화**: focal, boresight만 푼다. principal point는 boresight와 구분되지 않아 고정했고,
-   distortion·시간 offset은 풀어도 나아지지 않아 기각됐다 (자동으로 되돌림).
-4. **사진별 pose 보정**: INS pose를 prior(0.3°, 3 cm)로 두고 사진마다 6-DoF 보정. Software trigger라
-   노출 시각이 정확하지 않아 사진별 오차가 남기 때문이다. Prior의 4배를 넘는 보정은 버린다.
+1. **Mount orientation** `R_CB0`: search 72 axis combinations by the correlation "photo brightness vs point colour assigned by PCMaster" (correct one 0.45, the rest ≤ 0.09).
+2. **Photo ↔ LiDAR map registration**: block-match an image of the LiDAR points rendered from the photo viewpoint against the photo
+   to make 2D–3D correspondences. Blocks whose peak is not unique because of the repeating tiles are discarded.
+3. **Global optimization**: solve only focal and boresight. The principal point is indistinguishable from the boresight and was fixed;
+   distortion and time offset did not improve when solved and were rejected (reverted automatically).
+4. **Per-photo pose correction**: a 6-DoF correction per photo with the INS pose as prior (0.3°, 3 cm). This is because with a software trigger
+   the exposure time is not exact and per-photo error remains. Corrections exceeding 4 times the prior are discarded.
 
-| 단계 | 재투영 오차 중앙값 (6000 px 기준) |
+| Stage | Median reprojection error (at 6000 px) |
 |---|---|
-| 초기값 (`.pcpp` lever arm, f = 16 mm) | 134 px |
-| 전역 최적화 (f = 4049 px, boresight pitch −1.83°) | 24 px |
-| 사진별 보정 (389장 적용, p95 0.33° / 2.8 cm) | 17 px |
+| Initial values (`.pcpp` lever arm, f = 16 mm) | 134 px |
+| Global optimization (f = 4049 px, boresight pitch −1.83°) | 24 px |
+| Per-photo correction (applied to 389 photos, p95 0.33° / 2.8 cm) | 17 px |
 
-17 px는 4 m 거리에서 약 1.7 cm다. 정합 자체가 1/16 해상도 block matching이라 이 값은 측정 잡음을 포함한다.
-리포트: `outputs/calib/blue_wall/report.json`.
+17 px is about 1.7 cm at 4 m distance. The registration itself is block matching at 1/16 resolution, so this value includes measurement noise.
+Report: `outputs/calib/blue_wall/report.json`.
 
-### 3.3 VO / SfM 비교 (`scripts/eval_vo.py`)
+### 3.3 VO / SfM comparison (`scripts/eval_vo.py`)
 
-INS와 LiDAR 없이 사진만으로 COLMAP sequential SfM을 돌려 INS trajectory와 비교했다.
+COLMAP sequential SfM was run from photos only, without INS or LiDAR, and compared with the INS trajectory.
 
-| 항목 | 결과 |
+| Item | Result |
 |---|---|
-| 등록된 사진 | 795장 중 488장 (61%) |
-| 모델 개수 | 41개로 분열 (최대 26장, 중앙값 12장) |
-| 정상 모델 32개 (377장) | Sim(3) 정렬 후 ATE 중앙값 2.1 cm, 상대 회전 오차 0.5° |
-| 잘못된 모델 6개 (99장) | ATE 1 m 이상 (타일 반복으로 잘못 붙음) |
-| SfM이 추정한 focal | 4090 px (3.2의 4049 px, 공칭 4085 px와 1% 이내) |
+| Registered photos | 488 of 795 (61%) |
+| Number of models | split into 41 (largest 26 photos, median 12) |
+| 32 good models (377 photos) | median ATE 2.1 cm after Sim(3) alignment, relative rotation error 0.5° |
+| 6 wrong models (99 photos) | ATE 1 m or more (wrongly joined because of tile repetition) |
+| Focal estimated by SfM | 4090 px (within 1% of the 4049 px of 3.2 and the nominal 4085 px) |
 
-해석: 2.5 s 간격 정지 사진(약 2.7 m 간격, 아래를 보는 카메라)과 반복 타일 때문에 **사진만으로는 전체
-trajectory를 하나로 잇지 못한다**. 짧은 구간 안에서는 INS와 cm 수준으로 일치하므로 INS pose가 신뢰할 만하다는
-교차 확인은 된다. Twin은 "INS pose + LiDAR map 기반 사진 보정"(3.2)을 쓴다. Raw IMU 기반 VIO는 하지 않았다
-(0.4 Hz 사진으로는 IMU dead-reckoning과 같다). 그림: `outputs/vo/blue_wall/sfm_vs_ins.png`.
+Interpretation: because of still photos at 2.5 s intervals (about 2.7 m apart, camera looking down) and repeating tiles, **photos alone cannot
+join the whole trajectory into one**. Within short segments they agree with the INS at cm level, which cross-checks that the INS pose is
+reliable. The twin uses "INS pose + LiDAR-map-based photo correction" (3.2). Raw-IMU-based VIO was not done
+(with 0.4 Hz photos it equals IMU dead reckoning). Figure: `outputs/vo/blue_wall/sfm_vs_ins.png`.
 
 ### 3.4 Mesh (`las_terrain.py`, `structure.py`)
 
-- **바닥 (2.5D, 0.25 m grid)**: xy cell마다 z 점유 column을 만들어 ground / obstacle / roof / 미관측을 나눈다.
-  지면은 "column에서 가장 조밀한 voxel의 8% 이상을 가진 가장 낮은 voxel"이다 (젖은 포장면의 반사 ghost 제거).
-  충돌과 planning에 쓴다. 장애물 cell은 지면 위 0.6 m까지만 올린 낮은 stub이다.
-- **구조물 (3D)**: 지면 위 0.25 m 이상의 포인트를 5 cm voxel로 줄이고, PCA normal을
-  **그 포인트를 쏜 센서 방향**으로 뒤집은 뒤 20 m tile마다 screened Poisson으로 표면을 만든다.
-  포인트에서 12 cm 넘게 떨어진 면은 지운다. 시각 전용이고, Isaac Gym이 뒷면을 그리지 않아 양면으로 내보낸다.
+- **Ground (2.5D, 0.25 m grid)**: a z occupancy column is built per xy cell to separate ground / obstacle / roof / unobserved.
+  The ground is "the lowest voxel holding at least 8% of the densest voxel in the column" (removes reflection ghosts on wet pavement).
+  Used for collision and planning. Obstacle cells are low stubs raised only up to 0.6 m above ground.
+- **Structure (3D)**: points at least 0.25 m above ground are reduced to 5 cm voxels, PCA normals are flipped toward
+  **the sensor that fired the point**, and a surface is built per 20 m tile with screened Poisson.
+  Faces more than 12 cm away from points are deleted. Visual only, and exported double-sided because Isaac Gym does not draw back faces.
 
 ### 3.5 Texture (`texture.py`)
 
-Texel(바닥 1 cm, 구조물 3 cm)마다 world 위치와 normal을 구하고 색을 다음 순서로 정한다.
+For each texel (ground 1 cm, structure 3 cm) the world position and normal are computed and the colour is decided in this order.
 
-| 순위 | 출처 | 방법 |
+| Rank | Source | Method |
 |---|---|---|
-| 1 | **photo** | 12 m 이내에서 texel을 보는 모든 사진을 투영. LiDAR depth map과 비교해 가려진 사진은 제외. 가중치 = (cos 입사각 / 거리² × 화면 가장자리 감쇠)³ |
-| 2 | **las_rgb** | PCMaster가 포인트에 입혀 둔 색. 유색 포인트가 조밀한 곳만 그대로 사용 |
-| 3 | **las_rgb 저주파 × intensity** | 유색 포인트가 드문 곳: 25 cm 범위 평균색 × intensity 명암 |
-| 4 | **material** | 색 정보가 전혀 없는 곳: 재질표 색 × intensity 명암 |
-| — | no_data | 스캔되지 않은 영역: 회색 |
+| 1 | **photo** | project every photo that sees the texel within 12 m. Photos occluded according to the LiDAR depth map are excluded. Weight = (cos incidence angle / distance² × image-edge falloff)³ |
+| 2 | **las_rgb** | the colour PCMaster assigned to the points. Used as is only where coloured points are dense |
+| 3 | **las_rgb low frequency × intensity** | where coloured points are sparse: mean colour over 25 cm × intensity shading |
+| 4 | **material** | where there is no colour information at all: material table colour × intensity shading |
+| — | no_data | unscanned area: grey |
 
-**Intensity 조절**
+**Intensity adjustment**
 
-1. laser별 gain 균등화 (laser별 중앙값을 전체 중앙값에 맞춤)
-2. 1–99.5% 구간 stretch 후 gamma 0.5 → 0–1
-3. 이 값은 밝기로 쓰지 않는다 (사진 밝기와 무상관). 두 가지로만 쓴다.
-   - **재질 구분**: (표면 종류 4가지 × intensity 12구간) 칸마다, 사진이 있는 texel의 평균색을 모아 **재질표**를 만든다.
-     표면 종류는 평평한 바닥 / 경사 바닥 / 수직 구조물 / 그 외 구조물. 색은 전부 이 현장 사진에서 나온다.
-   - **명암 detail**: `sqrt(I_fine / I_smooth)`를 0.7–1.35로 제한해 곱한다 (I_smooth는 약 12–15 cm 평균).
+1. Per-laser gain equalization (match each laser's median to the overall median)
+2. Stretch the 1–99.5% range, then gamma 0.5 → 0–1
+3. This value is not used as brightness (uncorrelated with photo brightness). It is used in only two ways.
+   - **Material separation**: for each bin of (4 surface types × 12 intensity bins), collect the mean colour of texels that have a photo to build the **material table**.
+     The surface types are flat ground / sloped ground / vertical structure / other structure. All colours come from photos of this site.
+   - **Shading detail**: multiply by `sqrt(I_fine / I_smooth)` clamped to 0.7–1.35 (I_smooth is a mean over about 12–15 cm).
 
-**재질 / 렌더링**: Isaac Gym 카메라는 texture 한 장의 기본색만 쓴다. 촬영일이 흐려 사진에 그림자가 약하므로
-사진의 조명을 그대로 texture에 굽고, sim에서는 조명 없이 그대로 보이게 했다. Isaac Gym의 shading이
-`tex × intensity × (ambient + max(0, n·l))`임을 측정으로 확인해서 intensity 0.04, ambient 25로 둔다
-(`sim.set_baked_lighting`). 하늘은 흐린 날 색의 dome mesh다. Texel별 출처는 `<tile>_source.png`로 남는다.
+**Material / rendering**: the Isaac Gym camera uses only the base colour of a single texture. The capture day was overcast and shadows in the photos are weak, so
+the lighting of the photos is baked into the texture as is, and the sim shows it unlit. Isaac Gym's shading was measured to be
+`tex × intensity × (ambient + max(0, n·l))`, so intensity is set to 0.04 and ambient to 25
+(`sim.set_baked_lighting`). The sky is a dome mesh in the colour of an overcast day. The per-texel source is kept in `<tile>_source.png`.
 
 ### 3.6 Navigation (`nav.py`, `sim.py`, `scripts/run_nav.py`)
 
-Semantic grid에서 ground가 아닌 cell과 경사 15° 이상을 막고 robot 반경만큼 부풀린 뒤, 0.5 m grid에서 A*
-(장애물 근처 비용 가중)로 waypoint 사이 경로를 잇는다. 추종은 pure pursuit + skid-steer 속도 제어다.
-8초 동안 0.2 m 이상 못 움직이면 `STUCK`, 뒤집히면 `FLIPPED`로 끝내고 `result.json`에 남긴다.
+On the semantic grid, non-ground cells and slopes of 15° or more are blocked and inflated by the robot radius, then A* on a 0.5 m grid
+(with extra cost near obstacles) connects the path between waypoints. Tracking is pure pursuit + skid-steer velocity control.
+If the robot cannot move 0.2 m in 8 s it ends as `STUCK`, if it flips over as `FLIPPED`, and this is recorded in `result.json`.
 
-## 4. 함께 정한 것
+## 4. Decisions made together
 
-| 항목 | 결정 | 이유 |
+| Item | Decision | Reason |
 |---|---|---|
-| Mesh 형상 | 바닥 2.5D + 구조물 3D | 주행 안정성은 유지하고 ego view의 벽·나무는 실제 형상으로 |
-| 사진 없는 영역 색 | 재질별 색 × intensity 명암 | 추정색임이 분명하고 예측 가능 |
-| VIO/VO | INS 기준 사진 보정 + 독립 SfM 비교 | INS가 cm급. SfM은 교차 검증용 |
-| D455 렌더링 | Isaac Gym 카메라 + 조명 baked texture | 물리·세 시점·depth가 한 프로그램에서 일치 |
+| Mesh shape | 2.5D ground + 3D structure | keeps driving stability, while walls and trees in the ego view have their real shape |
+| Colour of areas without photos | per-material colour × intensity shading | clearly an estimated colour, and predictable |
+| VIO/VO | photo correction based on INS + independent SfM comparison | INS is cm-level. SfM is for cross-validation |
+| D455 rendering | Isaac Gym camera + lighting-baked texture | physics, the three views and depth agree within one program |
 
-## 5. 결과
+## 5. Results
 
 **Twin (`assets/twin/blue_wall/full`, 234 × 260 m)**
 
-| 항목 | 값 |
+| Item | Value |
 |---|---|
-| 바닥 | 36 tile, texel 1 cm (tile당 약 3900 × 4330 px), 충돌 mesh 194만 face |
-| 구조물 | 20 m tile 117개, tile당 최대 4만 face, texel 3 cm |
-| 시각 mesh 합계 | 607만 face (구조물은 양면이라 렌더 시 약 2배), 1.5 GB |
-| Build 시간 | 전체 약 40분 (cache 후 재실행 시 export만 3분). cache `data/blue_wall` 21 GB |
+| Ground | 36 tiles, texel 1 cm (about 3900 × 4330 px per tile), collision mesh 1.94 M faces |
+| Structure | 117 tiles of 20 m, at most 40 k faces per tile, texel 3 cm |
+| Visual mesh total | 6.07 M faces (structures are double-sided, so about 2× when rendered), 1.5 GB |
+| Build time | about 40 min in total (3 min for export only on a rerun after caching). Cache `data/blue_wall` 21 GB |
 
-Texel 색 출처 (texel 수 기준):
+Texel colour source (by texel count):
 
-| 출처 | 바닥 (스캔된 영역 안) | 구조물 |
+| Source | Ground (inside the scanned area) | Structure |
 |---|---|---|
 | photo | 20.0% | 5.6% |
 | las_rgb | 6.2% | 18.9% |
-| las_rgb 저주파 × intensity | 24.3% | — |
-| material (재질표 × intensity) | 49.5% | 75.6% |
+| las_rgb low frequency × intensity | 24.3% | — |
+| material (material table × intensity) | 49.5% | 75.6% |
 
-바닥 전체 bbox의 31.9%는 스캔되지 않은 영역(no_data)이다. 사진은 보행 경로 주변 바닥에 집중돼 있어
-광장·잔디는 사진 색이고, 나무와 건물 윗부분은 대부분 재질색(회색 계열)이다.
+31.9% of the whole ground bbox is unscanned area (no_data). Photos are concentrated on the ground around the walking route, so
+the plaza and lawn have photo colour, while trees and the upper parts of buildings are mostly material colour (greyish).
 
-**Navigation 예시 (`outputs/nav/run_000`)**
+**Navigation example (`outputs/nav/run_000`)**
 
 ```bash
 python scripts/run_nav.py --waypoints 95 150  103 166  125 172  138 168 --out outputs/nav/run_000 --headless
 ```
 
-| 항목 | 값 |
+| Item | Value |
 |---|---|
-| Robot | LIMO (4.5 kg), 최고 1.0 m/s |
-| 결과 | waypoint 3개 모두 도달 (33.8 s / 95.3 s / 117.8 s) |
-| 계획 / 주행 거리 | 85.7 m / 90.0 m |
-| 최종 goal 오차 | 0.40 m (도달 판정 반경 0.4 m) |
-| 기록 | 3534 frame (30 fps). D455 depth 유효 pixel 57% (하늘과 20 m 밖은 0) |
+| Robot | LIMO (4.5 kg), top speed 1.0 m/s |
+| Result | all 3 waypoints reached (33.8 s / 95.3 s / 117.8 s) |
+| Planned / driven distance | 85.7 m / 90.0 m |
+| Final goal error | 0.40 m (arrival radius 0.4 m) |
+| Recording | 3534 frames (30 fps). 57% valid D455 depth pixels (sky and beyond 20 m are 0) |
 
-개발 중 고친 것: 젖은 타일의 반사로 지면 아래에 생긴 ghost 포인트 때문에 광장 전체가 장애물로 분류되던 문제
-(지면을 "column 최대 밀도의 8% 이상인 가장 낮은 voxel"로 바꿈), waypoint가 장애물 바로 옆으로 snap되어
-LIMO가 0.6 m stub에 올라타 뒤집히던 문제(waypoint를 1 m 여유가 있는 cell로 옮김), 되돌아가는 경로에서
-추종기가 지나온 구간을 다시 잡던 문제(구간별 추종).
+Fixed during development: the whole plaza being classified as obstacle because of ghost points below the ground caused by reflections on wet tiles
+(the ground was changed to "the lowest voxel with at least 8% of the column's maximum density"), waypoints snapping right next to an obstacle so that
+the LIMO climbed onto a 0.6 m stub and flipped (waypoints are moved to a cell with 1 m of margin), and the tracker re-acquiring an already
+driven segment on a route that doubles back (per-segment tracking).
 
 ## 6. Open questions
 
-해소되면 해당 항목을 위 절의 결과로 옮긴다.
+When one is resolved, the item moves into the results of the sections above.
 
-1. **LAS가 trajectory에서 (−3.46, −4.82) m 이동된 이유.** PCMaster export 때의 datum/기준국 좌표 보정인지,
-   다른 데이터(항공 LiDAR)에 맞춘 것인지 확인 필요. Twin 내부 정합에는 영향이 없지만 UTM 절대 좌표가 달라진다.
-2. **카메라 intrinsic 실측값.** Calibration 파일이 없어 focal만 추정했다. `.pcpp`의 `FOV=24.55` 의미도 불명.
-   Checkerboard calibration이 있으면 distortion까지 넣을 수 있다.
-3. **사진 trigger 지연.** Software trigger라 파일명 시각과 실제 노출 시각이 다를 수 있다. 사진별 보정으로
-   흡수했지만, hardware trigger/event 기록이 있는지 확인하면 더 정확해진다.
-4. **사진이 없는 영역.** 추가 촬영(특히 카메라를 수평에 가깝게) 계획이 있는지. 현재 카메라는 45° 아래라
-   벽 윗부분과 먼 곳은 사진이 없다.
-5. **나무·난간·유리.** 가는 가지는 Poisson mesh가 조각나고, 유리는 LiDAR가 통과해 벽에 구멍이 난다.
-   나무를 billboard/생략으로 처리할지, 유리면을 평면으로 메울지.
-6. **눈·일시적 물체.** 3월 촬영이라 눈이 texture와 지형에 들어 있다. 제거하거나 계절을 맞출지.
-7. **구조물 충돌.** 지금은 0.6 m stub만 충돌한다. 키 큰 robot이나 manipulator가 필요하면 3D 충돌 mesh가 필요.
-8. **실제 LIMO의 D455 장착 위치·각도.** 현재 base에서 (0.10, 0, 0.13) m, pitch 0°로 가정.
-9. **더 사실적인 ego view.** Isaac Gym은 PBR·그림자·반사가 없다. 기록한 camera pose로 외부 renderer
-   (LiDAR depth로 초기화한 Gaussian splatting 등)를 붙이거나 Isaac Sim으로 옮길지.
-10. **D455 센서 모델.** Depth가 이상적이다 (stereo noise, hole, IR pattern 없음). Noise model이 필요한지.
-11. **나머지 데이터.** `03-04` 세션과 raw `.scan`은 쓰지 않았다. 필요 여부.
+1. **Why the LAS is shifted by (−3.46, −4.82) m from the trajectory.** Needs checking whether it is a datum / base-station coordinate correction at PCMaster export
+   or an alignment to other data (airborne LiDAR). It does not affect registration inside the twin, but the absolute UTM coordinates differ.
+2. **Measured camera intrinsics.** There is no calibration file, so only the focal was estimated. The meaning of `FOV=24.55` in `.pcpp` is also unknown.
+   With a checkerboard calibration, distortion could be included too.
+3. **Photo trigger delay.** With a software trigger the filename time and the actual exposure time may differ. This was absorbed by the per-photo correction,
+   but checking whether hardware trigger / event records exist would make it more accurate.
+4. **Areas without photos.** Whether additional capture (especially with the camera closer to horizontal) is planned. The current camera points 45° down, so
+   upper walls and distant places have no photos.
+5. **Trees, railings, glass.** Thin branches fragment in the Poisson mesh, and LiDAR passes through glass, leaving holes in walls.
+   Whether to handle trees as billboards / omit them, and whether to fill glass surfaces with planes.
+6. **Snow and transient objects.** It was captured in March, so snow is in the texture and terrain. Whether to remove it or match the season.
+7. **Structure collision.** Currently only the 0.6 m stubs collide. A tall robot or a manipulator would need a 3D collision mesh.
+8. **D455 mount position and angle on the real LIMO.** Currently assumed (0.10, 0, 0.13) m from base, pitch 0°.
+9. **A more realistic ego view.** Isaac Gym has no PBR, shadows or reflections. Whether to attach an external renderer using the recorded camera poses
+   (e.g. Gaussian splatting initialized with LiDAR depth) or move to Isaac Sim.
+10. **D455 sensor model.** Depth is ideal (no stereo noise, holes or IR pattern). Whether a noise model is needed.
+11. **Remaining data.** The `03-04` sessions and the raw `.scan` were not used. Whether they are needed.
 
-## 7. 알려진 한계
+## 7. Known limitations
 
-- 사진 정합 정밀도(약 1–2 cm)가 바닥 texel(1 cm)과 비슷해서, 겹치는 사진 경계에 약한 번짐이 있다.
-- 사진별 노출 차이를 보정하지 않았다 (ISO 자동). 사진 경계에서 밝기 단차가 보일 수 있다.
-- 바닥 mesh가 0.25 m 간격이라 연석·계단 모서리가 둥글다.
-- Robot은 조명 없이 렌더되어 평평하게 보인다.
-- 충돌 stub(0.6 m)이 시각 mesh에도 들어 있어, 벽·화단 아래쪽이 두툼한 덩어리로 보이는 곳이 있다.
-- 포인트가 매우 많은 tile은 bake 중 메모리를 많이 쓴다 (worker 6개 기준 최대 약 30 GB).
+- Photo registration accuracy (about 1–2 cm) is similar to the ground texel (1 cm), so there is slight blur at the borders of overlapping photos.
+- Per-photo exposure differences were not corrected (auto ISO). Brightness steps may be visible at photo borders.
+- The ground mesh has 0.25 m spacing, so curb and stair edges are rounded.
+- The robot is rendered unlit and looks flat.
+- The collision stubs (0.6 m) are also in the visual mesh, so the lower part of walls and planters looks like a thick blob in places.
+- Tiles with very many points use a lot of memory during bake (up to about 30 GB with 6 workers).
 
 ---
 
-# 보조 도구: 항공 LiDAR에서 장소 잘라내기
+# Auxiliary tools: cropping a place out of airborne LiDAR
 
-`~/Desktop/Airborne.las`(20 GB, 706 M pts, 4.0 × 3.8 km, 약 92 pts/m²)처럼 위에서만 본 데이터용 초기 코드.
-Twin pipeline과는 별개다.
+Early code for data seen only from above, such as `~/Desktop/Airborne.las` (20 GB, 706 M pts, 4.0 × 3.8 km, about 92 pts/m²).
+Separate from the twin pipeline.
 
 ```bash
 conda activate umasslidar
-# 1) 전체 overview (1 m/px, UTM grid 표시) → 관심 영역의 UTM 좌표를 읽는다
+# 1) full overview (1 m/px, with UTM grid) → read the UTM coordinates of the area of interest
 python scripts/las_overview.py --las ~/Desktop/Airborne.las --out data/overview --res 1.0
 python scripts/las_overview.py --las ~/Desktop/Airborne.las --out data/overview --mark 703437 4696145 176
-# 2) 잘라내기 (+ 2.5D terrain GLB)
+# 2) crop (+ 2.5D terrain GLB)
 python scripts/crop_las.py --las ~/Desktop/Airborne.las --center 703437 4696145 --size 200 \
     --out data/site1.npz --glb site1
 ```
 
-- `overview.json`: `x = xmin + col·res`, `y = ymax − row·res`로 pixel을 UTM으로 바꾼다.
-- Crop은 20 M 포인트씩 streaming하며 int32 raw 좌표로 bbox만 비교한다 (20 GB 전체 약 30초).
-- `--glb`: 2.5D heightfield mesh (`umass_lidar/mesh.py`). `--mode dsm`(cell 최고점), `dtm`(지면만),
-  `hybrid`(지면 + 건물)이고, classification이 없으면 `dsm`만 가능하다.
-- `~/Desktop/b1.e57`은 UTM 좌표를 float32로 저장해 0.5 m 단위로 뭉개져 있어 쓰지 않는다.
+- `overview.json`: convert pixels to UTM with `x = xmin + col·res`, `y = ymax − row·res`.
+- The crop streams 20 M points at a time and compares only the bbox in int32 raw coordinates (about 30 s for the full 20 GB).
+- `--glb`: 2.5D heightfield mesh (`umass_lidar/mesh.py`). `--mode dsm` (highest point per cell), `dtm` (ground only),
+  `hybrid` (ground + buildings); without classification only `dsm` is possible.
+- `~/Desktop/b1.e57` stores UTM coordinates as float32, quantized to 0.5 m, so it is not used.
 
-# 환경
+# Environments
 
-| 용도 | conda env | 비고 |
+| Purpose | conda env | Notes |
 |---|---|---|
-| 데이터 처리 (`build_twin.py`, `eval_vo.py`, `prepare_robots.py`, 보조 도구) | `umasslidar` (miniforge, py3.10) | `pip install "laspy[lazrs]" open3d trimesh pillow scipy opencv-python-headless xatlas pycolmap matplotlib xacro pycollada` |
-| Simulation (`run_nav.py`) | `gleam` (anaconda3, py3.8, Isaac Gym Preview 4) | 실행 전 `export LD_LIBRARY_PATH=$CONDA_PREFIX/lib:$LD_LIBRARY_PATH` |
+| Data processing (`build_twin.py`, `eval_vo.py`, `prepare_robots.py`, auxiliary tools) | `umasslidar` (miniforge, py3.10) | `pip install "laspy[lazrs]" open3d trimesh pillow scipy opencv-python-headless xatlas pycolmap matplotlib xacro pycollada fast-simplification` |
+| Simulation (`run_nav.py`, `run_uav.py`) | `gleam` (anaconda3, py3.8, Isaac Gym Preview 4) | before running: `export LD_LIBRARY_PATH=$CONDA_PREFIX/lib:$LD_LIBRARY_PATH` |
 
-Robot URDF는 `scripts/prepare_robots.py`가 ROS 없이 만든다 (Jackal·Husky는 Clearpath repo를 clone,
-LIMO는 `~/Documents/limo/agilex_open_class/limo/limo_description` 사용). xacro → URDF, DAE → OBJ 변환 후
-`d455_link`를 붙이고 `assets/robots/robots.json`에 바퀴 반경·track·카메라 link를 기록한다.
+Robot URDFs are built by `scripts/prepare_robots.py` without ROS (Jackal and Husky clone the Clearpath repos,
+LIMO uses `~/Documents/limo/agilex_open_class/limo/limo_description`). After xacro → URDF and DAE → OBJ conversion it
+attaches `d455_link` and records wheel radius, track and camera link in `assets/robots/robots.json`.
 
-# Repo 구조
+# Repo structure
 
 ```
-configs/blue_wall.json      세션 설정 (session_dir, las, bbox_utm, origin)
+configs/blue_wall.json      session config (session_dir, las, bbox_utm, origin)
 scripts/
-  build_twin.py             세션 → digital twin (prep / calib / ground / bake / export)
-  run_nav.py                LIMO waypoint navigation + 세 시점 기록 (Isaac Gym)
-  eval_vo.py                사진만으로 SfM → INS 비교
-  prepare_robots.py         robot URDF 준비
-  select_region.py          overview 지도에서 영역을 골라 LAS로 잘라내기
-  build_twin_site.py        잘라낸 색 점군 LAS → digital twin (사진·궤적 없이)
-  build_twin_aerial.py      Metashape 항공 사진 project → digital twin (EE2023, configs/blue_wall_aerial.json)
-  blender_twin.py           twin을 Blender에서 열어 texture / D455 조정 (docs/blender_tuning.md)
-  las_overview.py, crop_las.py   보조 도구 (항공 LiDAR)
+  build_twin.py             session → digital twin (prep / calib / ground / bake / export)
+  run_nav.py                LIMO waypoint navigation + three-view recording (Isaac Gym)
+  run_uav.py                quadrotor waypoint flight + RGB-D recording (Isaac Gym)
+  run_team.py               LIMO + quadrotor running together (same A* path) + RGB-D recording of both robots (Isaac Gym)
+  build_collision.py        3D structure static collision: mesh mode (simplified visual tiles) / voxel mode (point cloud → closed voxel shell)
+  eval_vo.py                SfM from photos only → comparison with INS
+  prepare_robots.py         robot URDF preparation
+  select_region.py          pick an area on the overview map and crop it to a LAS
+  build_twin_site.py        cropped coloured point cloud LAS → digital twin (no photos or trajectory)
+  build_twin_aerial.py      Metashape aerial photo project → digital twin (EE2023, configs/blue_wall_aerial.json)
+  blender_twin.py           open a twin in Blender to tune texture / D455 (docs/blender_tuning.md)
+  las_overview.py, crop_las.py   auxiliary tools (airborne LiDAR)
 umass_lidar/
-  resepi.py                 세션 로더, UTM 변환, LAS shift 추정, tile/voxel cache
-  camera.py                 카메라 모델, 사진↔LiDAR 정합, calibration
+  resepi.py                 session loader, UTM conversion, LAS shift estimation, tile/voxel cache
+  camera.py                 camera model, photo↔LiDAR registration, calibration
   las_terrain.py            LAS → 2.5D ground / obstacle / roof
-  structure.py              3D 구조물 mesh (Poisson)
-  texture.py                photo 투영, intensity model, 재질표, GLB export
-  metashape.py              Metashape chunk 로더 (pose, depth map → cloud, 항공 사진 bank)
+  structure.py              3D structure mesh (Poisson)
+  texture.py                photo projection, intensity model, material table, GLB export
+  metashape.py              Metashape chunk loader (pose, depth map → cloud, aerial photo bank)
   nav.py                    traversability, A*, pure pursuit
-  sim.py, sim_assets.py     Isaac Gym helper (twin 로딩, 조명, robot, 카메라)
-  viz.py, mesh.py, io.py    지도 그리기, 2.5D mesh, 보조 도구용 I/O
-assets/twin/<name>/         ground.glb(충돌) + <variant>/ tile GLB·PNG·twin_visual.urdf (생성물, git 제외)
-data/<name>/                cache: tiles, voxel, depth map, camera.json (git 제외)
-outputs/                    calib / vo / nav 결과 (git 제외)
+  uav.py                    quadrotor URDF, rotor dynamics, geometric controller, 3D flight path
+  sim.py, sim_assets.py     Isaac Gym helpers (twin loading, lighting, robot, camera)
+  viz.py, mesh.py, io.py    map drawing, 2.5D mesh, I/O for the auxiliary tools
+assets/twin/<name>/         ground.glb (collision) + <variant>/ tile GLB / PNG / twin_visual.urdf (generated, not in git)
+data/<name>/                cache: tiles, voxel, depth map, camera.json (not in git)
+outputs/                    calib / vo / nav results (not in git)
 ```

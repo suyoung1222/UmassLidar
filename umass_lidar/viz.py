@@ -53,3 +53,15 @@ def write_terrain_map(prefix, grid_m=10.0, px_per_m=5.0, robot_radius=0.45, poin
     out = Path(out) if out else Path(str(prefix) + "_map.png")
     cv2.imwrite(str(out), img)
     return out
+
+
+def depth_vis(d16, max_m=10.0):
+    v = np.clip(d16.astype(np.float32) / (max_m * 1000.0), 0, 1)
+    img = cv2.applyColorMap((255 - v * 255).astype(np.uint8), cv2.COLORMAP_TURBO)[..., ::-1].copy()
+    img[d16 == 0] = 0
+    return img
+
+
+def label(img, text, org=(10, 24), scale=0.65):
+    cv2.putText(img, text, org, 0, scale, (0, 0, 0), 4, cv2.LINE_AA)
+    cv2.putText(img, text, org, 0, scale, (255, 255, 255), 2, cv2.LINE_AA)
