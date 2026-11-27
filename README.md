@@ -46,6 +46,35 @@ AlignedChunksViaPointClouds/
     transects.shp, Set2_Chunks*.png (screenshots before/after GCP alignment)
 ```
 
+# Demo
+A Clearpath Warthog and a ModalAI Starling 2 Max follow a fixed loop over the lawn next to the campus pond,
+live in the Isaac Gym viewer. The window stays open afterwards so you can look around or drive the Warthog yourself.
+
+Example files (not in git):
+- **Pond twin**: `pond_twin.tar.gz` (913 MB, 1.4 GB unpacked; download link: TODO). Unpack in the repo root with
+  `tar xzf pond_twin.tar.gz` → `assets/twin/pond/` and `configs/pond.json`.
+- **Robots**: `python scripts/prepare_robots.py` (Warthog, processing env) and, optionally,
+  `python scripts/prepare_robots.py --starling` (Starling meshes; without them a box model is used).
+- **Isaac Gym Preview 4** env (section "Environments"), Linux + NVIDIA GPU.
+
+```bash
+conda activate gleam && export LD_LIBRARY_PATH=$CONDA_PREFIX/lib:$LD_LIBRARY_PATH
+python scripts/demo.py
+```
+
+| Key | Action |
+|---|---|
+| `1` / `2` | follow the Warthog / the Starling |
+| `0` | free camera (mouse + WASD) |
+| `←` `→` / `↑` `↓` | orbit / zoom |
+| `T` | manual drive of the Warthog on / off (`I` `K` forward / back, `J` `L` turn) |
+| `P` | pause |
+
+- Loading takes 1–2 minutes before the window responds. Close the window or press Ctrl-C to stop.
+- `python scripts/demo.py --record` also writes the videos to `outputs/demo/` (about 10× slower). Other arguments are passed
+  on to `scripts/run_team.py`, e.g. `--speed 2 --follow uav --collision none`.
+- If demo.py reports something missing it prints how to get it. Details on the robots and the viewer are in section 5c.
+
 
 # Quick guideline
 ## 1. Select region.

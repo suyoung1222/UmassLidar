@@ -80,6 +80,8 @@ def main():
                     help="viewer camera at start (keys 1/2/0 switch while running)")
     ap.add_argument("--no-record", action="store_true",
                     help="skip camera rendering and videos (much faster live view); CSV and result.json only")
+    ap.add_argument("--hold", action="store_true",
+                    help="with a viewer: keep the sim running after the goal (or a stuck UGV) until the window is closed")
     ap.add_argument("--plan-only", action="store_true")
     ap.add_argument("--uav", default="starling", choices=sorted(U.MODELS), help="UAV model")
     a = ap.parse_args()
@@ -167,7 +169,9 @@ def main():
     contacts, first_contact, max_err, yaw_cmd = 0, None, 0.0, yaw0
     cam_yaw, frame, k = yaw0, 0, 0
     valid_g, valid_a, sep = [], [], []
-    while k < int(a.max_seconds / sp.dt) + settle and not (g_done and u_done) and not (g_stuck or g_flip or u_crash):
+    hold_open = a.hold and viewer is not None
+    while hold_open or (k < int(a.max_seconds / sp.dt) + settle and not (g_done and u_done)
+                        and not (g_stuck or g_flip or u_crash)):
         pos, quat, yaw, v, w = robot.state()
         s = quad.state()
         upos = s["pos"]
@@ -188,7 +192,7 @@ def main():
                     g_flip = True
                 if g_prog[1] is None or np.linalg.norm(pos[:2] - g_prog[1]) > 0.2:
                     g_prog = (t, pos[:2].copy())
-                elif t - g_prog[0] > 8.0:
+                elif t - g_prog[0] > 8.0 and not hold_open:
                     g_stuck = True
             if g_done:
                 v_cmd = w_cmd = 0.0
@@ -221,6 +225,9 @@ def main():
                 if first_contact is None:
                     first_contact = (round(t, 2), [round(float(x), 2) for x in upos])
                     print(f"[uav] CONTACT at t={t:.1f}s pos={np.round(upos, 1)}", flush=True)
+        man = viewer.teleop(v_max) if viewer is not None and k >= settle else None
+        if man is not None:                     # manual drive (T): keys override the path follower
+            v_cmd, w_cmd = man
         robot.command(v_cmd, w_cmd)
         quad.apply_motors(f_cmd, s)
         gym.simulate(sim)

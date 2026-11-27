@@ -1,7 +1,10 @@
 """Isaac Gym helpers shared by the experiment scripts (import isaacgym before torch/this module)."""
 from __future__ import annotations
 
+import contextlib
 import json
+import os
+import sys
 from pathlib import Path
 
 import numpy as np
@@ -60,6 +63,21 @@ def set_baked_lighting(gym, sim, directional=0.04):
         gym.set_light_parameters(sim, k, gymapi.Vec3(0, 0, 0), gymapi.Vec3(0, 0, 0), gymapi.Vec3(0, 0, 1))
 
 
+@contextlib.contextmanager
+def _quiet():
+    """Silence C-level stdout / stderr (Isaac Gym asset-loader chatter) inside the block."""
+    sys.stdout.flush(); sys.stderr.flush()
+    saved = os.dup(1), os.dup(2)
+    null = os.open(os.devnull, os.O_WRONLY)
+    try:
+        os.dup2(null, 1); os.dup2(null, 2)
+        yield
+    finally:
+        os.dup2(saved[0], 1); os.dup2(saved[1], 2)
+        for fd in (*saved, null):
+            os.close(fd)
+
+
 def _add_static_mesh(gym, sim, V, F):
     V = np.ascontiguousarray(V, dtype=np.float32)
     F = np.ascontiguousarray(F, dtype=np.uint32)
@@ -98,7 +116,8 @@ def add_twin(gym, sim, twin_dir, meta, structure_collision="mesh"):
     o = gymapi.AssetOptions()
     o.fix_base_link = True
     o.disable_gravity = True
-    vis = gym.load_asset(sim, str(twin_dir), "twin_visual.urdf", o)
+    with _quiet():      # one "Multiple textures per material not supported" line per tile otherwise
+        vis = gym.load_asset(sim, str(twin_dir), "twin_visual.urdf", o)
     assert vis is not None, "twin visual failed to load"
     env = gym.create_env(sim, gymapi.Vec3(0, 0, 0), gymapi.Vec3(*meta["size_xy"], 60), 1)
     actor = gym.create_actor(env, vis, gymapi.Transform(), "twin_visual", -1, 0xFFFF)
@@ -174,7 +193,8 @@ class FollowViewer:
     """Interactive viewer whose camera can follow a robot in third person.
 
     targets: {name: (fn() -> (pos xyz, yaw), distance m)}. Keys: 1..9 follow that target, 0 free
-    camera (normal Isaac Gym mouse / WASD control), LEFT/RIGHT orbit, UP/DOWN zoom, P pause."""
+    camera (normal Isaac Gym mouse / WASD control), LEFT/RIGHT orbit, UP/DOWN zoom, P pause,
+    T toggles manual driving (I/K forward / back, J/L turn; read it with teleop())."""
 
     def __init__(self, gym, sim, env, targets, follow=None):
         self.gym, self.sim, self.env = gym, sim, env
@@ -182,20 +202,27 @@ class FollowViewer:
         self.targets, self.names = targets, list(targets)
         self.cur = follow if follow in targets else None
         self.orbit, self.zoom, self.cam_yaw, self.paused = 0.0, 1.0, None, False
+        self.manual, self.held = False, set()
         keys = {f"KEY_{i + 1}": f"follow{i}" for i in range(min(9, len(self.names)))}
         keys.update(KEY_0="free", KEY_LEFT="orbit+", KEY_RIGHT="orbit-", KEY_UP="zoom-", KEY_DOWN="zoom+",
-                    KEY_P="pause")
+                    KEY_P="pause", KEY_T="teleop", KEY_I="t_fwd", KEY_K="t_back", KEY_J="t_left", KEY_L="t_right")
         for k, name in keys.items():
             if hasattr(gymapi, k):
                 gym.subscribe_viewer_keyboard_event(self.viewer, getattr(gymapi, k), name)
         print("[viewer] keys: " + "  ".join(f"{i + 1}=follow {n}" for i, n in enumerate(self.names)) +
-              "  0=free camera  LEFT/RIGHT=orbit  UP/DOWN=zoom  P=pause", flush=True)
+              "  0=free camera  LEFT/RIGHT=orbit  UP/DOWN=zoom  P=pause  T=manual drive (I/K/J/L)", flush=True)
 
     def _events(self):
         for e in self.gym.query_viewer_action_events(self.viewer):
+            if e.action.startswith("t_"):
+                (self.held.add if e.value > 0 else self.held.discard)(e.action)
+                continue
             if e.value <= 0:
                 continue
-            if e.action.startswith("follow"):
+            if e.action == "teleop":
+                self.manual = not self.manual
+                print(f"[viewer] manual drive {'ON (I/K forward/back, J/L turn)' if self.manual else 'OFF'}", flush=True)
+            elif e.action.startswith("follow"):
                 self.cur, self.cam_yaw, self.orbit = self.names[int(e.action[6:])], None, 0.0
             elif e.action == "free":
                 self.cur = None
@@ -205,6 +232,13 @@ class FollowViewer:
                 self.zoom = float(np.clip(self.zoom * (1.25 if e.action[-1] == "+" else 0.8), 0.3, 8.0))
             elif e.action == "pause":
                 self.paused = not self.paused
+
+    def teleop(self, v_max, w_max=1.2):
+        """(v, w) from the held I/K/J/L keys while manual drive is on, else None."""
+        if not self.manual:
+            return None
+        h = self.held
+        return (v_max * (("t_fwd" in h) - ("t_back" in h)), w_max * (("t_left" in h) - ("t_right" in h)))
 
     def _draw(self):
         if self.cur is not None:
