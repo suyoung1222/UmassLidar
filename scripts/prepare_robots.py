@@ -3,6 +3,7 @@ and mount an Intel RealSense D455 placeholder link (`d455_link`) for camera atta
 
 Sources (cloned into third_party/ if missing):
     jackal : https://github.com/jackal/jackal   (jackal_description, BSD)
+    warthog: https://github.com/warthog-cpr/warthog (warthog_description, BSD)
     husky  : https://github.com/husky/husky     (husky_description, BSD)
     limo   : AgileX limo_description; pass --limo-desc <path to limo_description>
 
@@ -41,6 +42,14 @@ ROBOTS = {
                   pkg="husky_description", xacro="urdf/husky.urdf.xacro",
                   wheel_radius=0.1651, track=0.5708, cam_parent="base_link",
                   cam_xyz=(0.40, 0.0, 0.32), max_speed=1.0),
+    # Clearpath Warthog: 280 kg, 1.52 x 1.38 m, 5 m/s max (warthog_control). track = wheel centre spacing.
+    "warthog": dict(repo="https://github.com/warthog-cpr/warthog.git", branch="kinetic-devel",
+                    pkg="warthog_description", xacro="urdf/warthog.urdf.xacro",
+                    wheel_radius=0.3, track=1.13642, cam_parent="base_link",
+                    cam_xyz=(0.72, 0.0, 0.45), max_speed=5.0,
+                    # Isaac Gym replaces a collision mesh by its convex hull: the hull of the fender
+                    # mesh wraps the wheels and drags on the ground, so those collisions are dropped.
+                    drop_collision=("fenders-collision", "light-collision"), yaw_feedback=True),
     "limo": dict(repo=None, pkg="limo_description", xacro="urdf/limo_four_diff.xacro",
                  wheel_radius=0.045, track=0.172, cam_parent="base_link",
                  cam_xyz=(0.10, 0.0, 0.13), max_speed=1.0),
@@ -76,6 +85,11 @@ def convert(name: str, cfg: dict, pkg_dir: Path):
         for tag in ("gazebo", "transmission"):
             for e in root.findall(tag):
                 root.remove(e)
+        for link in root.findall("link"):
+            for c in link.findall("collision"):
+                m = c.find("geometry/mesh")
+                if m is not None and any(k in m.get("filename") for k in cfg.get("drop_collision", ())):
+                    link.remove(c)
         for m in root.iter("mesh"):
             fn = m.get("filename")
             p = Path(fn.replace(f"package://{cfg['pkg']}", str(dst)))
@@ -115,7 +129,8 @@ def convert(name: str, cfg: dict, pkg_dir: Path):
     info = dict(urdf=f"{name}/{name}.urdf", wheel_radius=cfg["wheel_radius"], track=cfg["track"],
                 left_wheels=[w for w in wheels if "left" in w],
                 right_wheels=[w for w in wheels if "right" in w],
-                camera_link="d455_link", camera_xyz=cfg["cam_xyz"], max_speed=cfg["max_speed"])
+                camera_link="d455_link", camera_xyz=cfg["cam_xyz"], max_speed=cfg["max_speed"],
+                yaw_feedback=bool(cfg.get("yaw_feedback", False)))
     assert info["left_wheels"] and info["right_wheels"], wheels
     print(f"[{name}] links={len(root.findall('link'))} wheels={wheels}")
     return info

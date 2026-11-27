@@ -34,14 +34,37 @@ QUAD = dict(
     camera_xyz=(0.13, 0.0, -0.03),
 )
 
+# ModalAI Starling 2 Max. Published: take-off weight 566 g, 322 mm diagonal, 180 mm tri-blade props,
+# 500 g payload (docs.modalai.com/starling-2-max-datasheet). ModalAI publishes no URDF, thrust curve
+# or inertia, so f_max / inertia / drag / k_m below are ESTIMATES: f_max from "lifts 500 g payload
+# with thrust/weight ~2", inertia from a 322 mm frame with the mass at the motors and battery.
+STARLING = dict(
+    name="starling",
+    mass=0.566,
+    inertia=(0.0042, 0.0042, 0.0075),
+    arm=0.161,                # centre -> rotor [m] (322 mm diagonal taken as motor to motor)
+    f_max=5.2,                # per rotor [N], estimate
+    k_m=0.016,
+    tau_motor=0.03,
+    drag=(0.20, 0.20, 0.28),
+    prop_radius=0.090,
+    body=(0.17, 0.08, 0.05),
+    camera_link="d455_link",
+    camera_xyz=(0.10, 0.0, -0.02),
+)
+MODELS = {"quad": QUAD, "starling": STARLING}
+
 
 def write_quad_urdf(path=None, p=QUAD):
     """Box body + 4 arms + 4 rotor discs (visual only) + fixed d455_link."""
-    path = Path(path or ROOT / "assets/robots/quad/quad.urdf")
+    name = p.get("name", "quad")
+    path = Path(path or ROOT / f"assets/robots/{name}/{name}.urdf")
+    bx, by, bz = p.get("body", (0.16, 0.10, 0.06))
+    pr = p.get("prop_radius", 0.065)
     path.parent.mkdir(parents=True, exist_ok=True)
     ixx, iyy, izz = p["inertia"]
     a = p["arm"] / np.sqrt(2)
-    vis = ['<visual><geometry><box size="0.16 0.10 0.06"/></geometry>'
+    vis = [f'<visual><geometry><box size="{bx} {by} {bz}"/></geometry>'
            '<material name="body"><color rgba="0.15 0.15 0.17 1"/></material></visual>']
     for k, (sx, sy) in enumerate(((1, 1), (-1, 1), (-1, -1), (1, -1))):
         yaw = np.arctan2(sy, sx)
@@ -50,10 +73,10 @@ def write_quad_urdf(path=None, p=QUAD):
                    '<material name="arm"><color rgba="0.25 0.25 0.28 1"/></material></visual>')
         col = "0.9 0.25 0.15 1" if sx > 0 else "0.2 0.6 0.95 1"       # red = front
         vis.append(f'<visual><origin xyz="{sx * a:.4f} {sy * a:.4f} 0.03"/>'
-                   '<geometry><cylinder radius="0.065" length="0.008"/></geometry>'
+                   f'<geometry><cylinder radius="{pr}" length="0.008"/></geometry>'
                    f'<material name="rotor{k}"><color rgba="{col}"/></material></visual>')
     cx, cy, cz = p["camera_xyz"]
-    urdf = f"""<robot name="quad">
+    urdf = f"""<robot name="{name}">
 <link name="base_link">
   <inertial><mass value="{p['mass']}"/>
     <inertia ixx="{ixx}" iyy="{iyy}" izz="{izz}" ixy="0" ixz="0" iyz="0"/></inertial>
@@ -151,7 +174,7 @@ class Quadrotor:
         t = gymapi.Transform()
         t.p = gymapi.Vec3(*xyz)
         t.r = gymapi.Quat.from_axis_angle(gymapi.Vec3(0, 0, 1), yaw)
-        self.actor = gym.create_actor(env, asset, t, "quad", 0, 1)
+        self.actor = gym.create_actor(env, asset, t, p.get("name", "quad"), 0, 1)
         self.mass = sum(b.mass for b in gym.get_actor_rigid_body_properties(env, self.actor))
         self.body = gym.find_actor_rigid_body_handle(env, self.actor, "base_link")
         self.base = gym.find_actor_rigid_body_index(env, self.actor, "base_link", gymapi.DOMAIN_ACTOR)

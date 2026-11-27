@@ -28,3 +28,8 @@ assets/robots/quad/
 *.psx
 *.blend
 *.blend1
+assets/robots/warthog/
+assets/robots/starling/
+
+# project page media (GitHub Pages) is allowed
+!docs/static/videos/*.mp4

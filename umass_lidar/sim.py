@@ -141,6 +141,7 @@ class WheeledRobot:
         props["effort"].fill(self.mass * 9.81 * self.cfg["wheel_radius"] * 1.0)
         gym.set_actor_dof_properties(env, self.actor, props)
         self.base = gym.find_actor_rigid_body_index(env, self.actor, "base_link", gymapi.DOMAIN_ACTOR)
+        self.dt, self._wi = gym.get_sim_params(sim).dt, 0.0
 
     def state(self):
         """(pos xyz, quat xyzw, yaw, forward speed, yaw rate)"""
@@ -156,6 +157,14 @@ class WheeledRobot:
 
     def command(self, v, w):
         r, tr = self.cfg["wheel_radius"], self.cfg["track"]
+        if self.cfg.get("yaw_feedback") and self.dt:
+            # skid-steer scrub: the body yaws far slower than the wheel differential implies, so
+            # close the loop on the measured yaw rate (PI, anti-windup clamp on the differential)
+            wm = self.state()[4]
+            self._wi = float(np.clip(self._wi + 6.0 * (w - wm) * self.dt, -12.0, 12.0))
+            if abs(w) < 1e-3 and abs(v) < 1e-3:
+                self._wi = 0.0
+            w = w + 2.0 * (w - wm) + self._wi
         wl, wr = (v - w * tr / 2) / r, (v + w * tr / 2) / r
         tgt = np.where(self.is_left, wl, np.where(self.is_right, wr, 0.0)).astype(np.float32)
         self.gym.set_actor_dof_velocity_targets(self.env, self.actor, tgt)

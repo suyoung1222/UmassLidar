@@ -61,7 +61,9 @@ def main():
     ap.add_argument("--out", required=True)
     ap.add_argument("--headless", action="store_true")
     ap.add_argument("--plan-only", action="store_true")
+    ap.add_argument("--uav", default="quad", choices=sorted(U.MODELS), help="UAV model")
     a = ap.parse_args()
+    QP = U.MODELS[a.uav]
     if a.no_structure_collision:
         a.collision = "none"
 
@@ -96,10 +98,10 @@ def main():
     gym, sim, sp = S.make_sim()
     env, _ = S.add_twin(gym, sim, twin, meta, a.collision)
     yaw0 = float(np.arctan2(*(path[2, :2] - path[1, :2])[::-1]))
-    quad = U.Quadrotor(gym, sim, env, path[0], yaw0, sp.dt)
-    ctl = U.QuadController()
+    quad = U.Quadrotor(gym, sim, env, path[0], yaw0, sp.dt, p=QP)
+    ctl = U.QuadController(p=QP)
     print(f"[uav] quad mass={quad.mass:.2f} kg, hover thrust {quad.mass * 9.81 / 4:.2f} N/rotor "
-          f"(max {U.QUAD['f_max']} N)")
+          f"(max {QP['f_max']} N)")
 
     lo, hi = path[:, :2].min(0), path[:, :2].max(0)
     span = np.maximum(hi - lo + 16.0, 30.0)
@@ -253,15 +255,15 @@ def main():
     err = float(np.linalg.norm(pos - path[-1]))
     result = dict(success=bool(done and not hit and not contacts), crashed=bool(crashed), blocked=bool(blocked),
                   structure_hit=bool(hit), contact_steps=contacts, first_contact=first_contact,
-                  structure_collision=a.collision, robot="quad",
+                  structure_collision=a.collision, robot=a.uav,
                   twin=str(twin), waypoints=[list(map(float, p)) for p in pts], leg_altitude_z=alts,
                   agl=a.agl, clearance=a.clearance, waypoint_reached_t=reached[1:], takeoff_t=reached[0],
                   planned_length_m=route_len, flown_m=dist, time_s=frame / FPS, goal_error_m=err,
                   max_cross_track_m=max_err, frames=frame, fps=FPS, origin_utm=meta["origin"],
-                  crs=cfg.get("crs"), quad=U.QUAD,
+                  crs=cfg.get("crs"), quad=QP,
                   d455=dict(width=spec["width"], height=spec["height"], hfov_deg=spec["hfov"], K=ego.K,
                             depth="uint16 mm, 0 = invalid", depth_range_m=[spec["depth_min"], spec["depth_max"]],
-                            mount_xyz_in_base=list(U.QUAD["camera_xyz"]), pitch_down_deg=a.cam_pitch_deg,
+                            mount_xyz_in_base=list(QP["camera_xyz"]), pitch_down_deg=a.cam_pitch_deg,
                             valid_depth_fraction=float(np.mean(valid)) if valid else 0.0,
                             pose_columns="cam_* in trajectory.csv: link frame x forward, y left, z up"))
     (out / "result.json").write_text(json.dumps(result, indent=2))

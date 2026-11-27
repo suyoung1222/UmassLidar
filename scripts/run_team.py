@@ -77,7 +77,9 @@ def main():
     ap.add_argument("--out", required=True)
     ap.add_argument("--headless", action="store_true")
     ap.add_argument("--plan-only", action="store_true")
+    ap.add_argument("--uav", default="quad", choices=sorted(U.MODELS), help="UAV model")
     a = ap.parse_args()
+    QP = U.MODELS[a.uav]
 
     twin, cfg = S.resolve_twin(a.config, a.variant)
     gprefix = twin.parent / "ground"
@@ -114,8 +116,8 @@ def main():
     gym, sim, sp = S.make_sim()
     env, _ = S.add_twin(gym, sim, twin, meta, a.collision)
     robot = S.WheeledRobot(gym, sim, env, a.robot, path[0], yaw0, h, res)
-    quad = U.Quadrotor(gym, sim, env, P[0], yaw0, sp.dt)
-    ctl = U.QuadController()
+    quad = U.Quadrotor(gym, sim, env, P[0], yaw0, sp.dt, p=QP)
+    ctl = U.QuadController(p=QP)
     v_max = a.speed or min(rcfg["max_speed"], 1.0)
     u_speed = a.uav_speed or v_max
     look = float(np.clip(0.8 * v_max, 0.4, 0.8))
