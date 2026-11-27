@@ -7,6 +7,45 @@ navigation experiments and driving-data collection inside them.
   The whole "RSS2027 Digital Twin" section below covers this.
 - **Auxiliary tools**: early experimental code that crops a place out of airborne LiDAR (`Airborne.las`) and builds a 2.5D terrain. Last section.
 
+# Datasets
+## 1. 2026 03 07 snowy bluewall
+Sensors: Inertial Labs RESEPI + Hesai 32ch LiDAR + Sony a5100
+Data (https://drive.google.com/drive/u/1/folders/1MhfiWRgno-qihtz96PdWmms9i4fMCdGZ):
+2026-03-07-18-07-32 (24 GB)	33 min run, 796 photos	PPK post-processing finished. Main session
+2026-03-04-23-35-52 (1.5 GB)	20 s, 11 photos, lidar.scan 94 MB	raw only (no ppk.txt). A test capture.
+
+```bash
+camera/<serial>_<t0>_<t1>.jpg   796 photos, 6000×4000, Sony ILCE-5100
+                                t is in µs, t/1e6 − 1e9 = LAS gps_time. EXIF orientation=3 (rotated 180°)
+ins/ppk.txt                     PPK trajectory 125 Hz: Week GPSTime UTCTime Lon Lat H-Ell Heading Pitch Roll
+ins/trajectories/ppk/*.txt      5 copies of the same trajectory differing only in geoid (WGS84 ellipsoid, GEOID18 etc.)
+ins/SBET.OUT                    the same trajectory (SBET binary)
+ins/*-imu.imr, *-gnss.gps etc.  raw IMU/GNSS and Waypoint Inertial Explorer intermediate files
+data/hamp0660.*, igu*.sp3       PPK base station data (CORS 'hamp', RINEX obs/nav, precise ephemeris)
+data/RESEPI-*.data (57 files, 15 GB) raw device logs
+processed_ppk.pcmp              LiDAR lever arm, boresight, mount angle (pitch −45°), per-laser corrections
+processed_ppk.pcpp              camera lever arm (0, −0.08, −0.048), boresight, mount −45°, photo list
+log.txt                         collection summary: GNSS satellite count (21–25 for 70%), IMU statistics, range filter 8–200 m
+```
+
+## 2. Airborne.las EE2023
+Sensors: Inertial Labs RESEPI + Hesai 32ch LiDAR + DJI drone camera
+Data (https://drive.google.com/drive/u/1/folders/1kBTbf2Wi2AtV4I8o0_BCfMtxHIy65xED):
+
+```bash
+Aerial Images/RegionXX/DJI_*.JPG   25 regions, 12,514 photos
+    mostly Mavic 2 Pro (5472×3648, no RTK, altitude about 122 m), vertical (nadir) capture
+    Region17/18/19/23/24/25/26/WEB are oblique captures (gimbal −65°)
+    only Region08_09_10_15_16 is Mavic 3E + PPK files (.nav/.obs/Timestamp)
+AlignedChunksViaPointClouds/
+    *_SubregionSet_1.psx/.files   chunk 17(R29), 18(R22), 38(R36_37_38_44), 40/41 merged
+    *_SubregionSet_2_*.psx/.files chunk 10(R26), 14(R25), 15(R24), 16(R23), 37–39 merged
+      each chunk: chunk.zip/doc.xml (aligned camera poses, calibration, chunk→ECEF transform)
+                0/depth_maps (EXR, 1/8 of the original resolution), dense_cloud (proprietary .oc3)
+                point_cloud (tie points), merged chunks also have elevation (DEM)
+    transects.shp, Set2_Chunks*.png (screenshots before/after GCP alignment)
+```
+
 
 # Quick guideline
 ## 1. Select region.
@@ -107,12 +146,13 @@ python scripts/run_uav.py --waypoints 104 171 130 171 --agl 1.5 --clearance -100
   (actual collisions only when the `structure_collision.npz` of section 6 exists).
 - Camera: the same RGB-D as the D455, mounted under the nose, `--cam-pitch-deg` (default 30° down), `--depth-max` (default 20 m).
 - Output is the same as `run_nav.py` (`combined.mp4`, `d455_rgb/depth.mp4`, `depth/*.png` uint16 mm, `trajectory.csv` with rotor thrust and AGL added, `result.json`).
-- Vehicle model (`umass_lidar/uav.py`): 1 kg X-quad, 4 rotors of at most 6 N each (thrust/weight about 2.4), first-order motor lag 30 ms, linear drag.
+- Vehicle model (`umass_lidar/uav.py`): `--uav starling` (default, section 5c) or `--uav quad`, a 1 kg X-quad with 4 rotors of at most 6 N each
+  (thrust/weight about 2.4). Both use a first-order motor lag of 30 ms and linear drag.
   Isaac Gym has no rotor model, so every step the summed force and torque of the 4 rotor thrusts are applied directly to the body.
   There are three levels of input usable as an RL action: `Quadrotor.apply_motors(f)` (rotor thrusts),
   `QuadController.ctbr(T, rates)` (collective thrust + body rate), `QuadController.velocity(v, yaw)` (velocity command, what waypoint flight uses).
 
-**Verification (`outputs/uav/run_000`, blue_wall)**: all 3 waypoints reached (takeoff 4.1 s, 12.0 / 22.0 / 28.6 s), planned 60.8 m / flown 60.7 m,
+**Verification (`outputs/uav/run_000`, blue_wall, `--uav quad`)**: all 3 waypoints reached (takeoff 4.1 s, 12.0 / 22.0 / 28.6 s), planned 60.8 m / flown 60.7 m,
 goal error 0.11 m, maximum path deviation 0.29 m, 857 frames, 77% valid depth pixels.
 
 ## 5b. Run UGV + UAV together
@@ -127,11 +167,65 @@ python scripts/run_team.py --config configs/blue_wall_aerial.json --waypoints 95
     --out outputs/team/blue_wall_aerial_voxel --headless --collision voxel
 ```
 
-- The LIMO and the quadrotor follow the same waypoints along the same A* ground path in one sim. The UAV flies above that path
+- The UGV and the UAV follow the same waypoints along the same A* ground path in one sim. The UAV flies above that path
   at height `max(ground + --agl (5 m), structure surface + --clearance (2 m))` (smoothly interpolated along the path).
 - The default `--uav-speed` equals the UGV speed (they move side by side). The UAV takes off 1.5 m behind the UGV start point.
 - Output: `combined.mp4` (map seen from above + third person + D455 RGB/depth of both robots), `topview.mp4`, `chase.mp4`,
   `ugv_rgb/depth.mp4`, `uav_rgb/depth.mp4`, `depth_ugv/`, `depth_uav/`, `trajectory_ugv.csv`, `trajectory_uav.csv`, `result.json`.
+
+## 5c. Robots, defaults and the live viewer
+
+The default UGV is the **Clearpath Warthog** and the default UAV is the **ModalAI Starling 2 Max**
+(`--robot warthog`, `--uav starling`). The older results in this README (LIMO, 1 kg generic quad) were produced
+with `--robot limo --uav quad`; pass those to reproduce them.
+
+| Robot | Flag | Model source | Notes |
+|---|---|---|---|
+| Warthog | `--robot warthog` (default) | official `warthog_description` URDF and meshes | 260 kg, track 1.14 m, wheel radius 0.3 m. Fender / light collision meshes are dropped (Isaac Gym turns them into convex hulls that drag on the ground). The two rocker joints are held by a velocity drive, not a real differential. |
+| LIMO / Jackal / Husky | `--robot limo` etc. | AgileX / Clearpath descriptions | as before |
+| Starling 2 Max | `--uav starling` (default) | mass 566 g, 260 × 190 mm motor layout, 180 mm props from the [datasheet](https://docs.modalai.com/starling-2-max-datasheet/); body / prop meshes and inertia from the community model [AIRLAB_Starling2Max](https://github.com/BjarkeHJ/AIRLAB_Starling2Max) | ModalAI publishes no URDF. **Max thrust (5.2 N per rotor), motor constants and drag are estimates, not measurements.** The camera is still the D455-like RGB-D, not the Starling's own tracking / hi-res / ToF cameras. Propellers are static visuals. |
+| Generic quad | `--uav quad` | parametric box-and-disc model | 1 kg, 6 N per rotor |
+
+```bash
+conda activate umasslidar
+python scripts/prepare_robots.py              # Warthog, Jackal, Husky (+ LIMO with --limo-desc)
+python scripts/prepare_robots.py --starling   # Starling 2 Max meshes -> assets/robots/starling/meshes/
+```
+
+- The Starling meshes are **not in this repo**: the source repo has no licence file, so they are fetched locally
+  (`assets/robots/starling/` is gitignored). Without them `--uav starling` falls back to a box-and-disc body with the same dynamics.
+- `--speed` defaults to the robot's top speed capped at 1.0 m/s. The Warthog runs below used `--speed 3`.
+- Skid-steer robots yaw much slower than the wheel differential implies in this sim (commanded 1.5 rad/s gave about 0.15 rad/s
+  for both the Warthog and the LIMO on flat ground). The Warthog has an experimental yaw-rate PI loop (`yaw_feedback` in
+  `assets/robots/robots.json`, 1.3 rad/s on flat ground); it has not been shown to shorten a full mission, set it to `false` to turn it off.
+
+**Live viewer.** Without `--headless` a viewer window opens and its camera follows the robot in third person.
+Clicking an actor in the Isaac Gym side panel cannot be read from Python, so the target is chosen with keys:
+
+| Key | Action |
+|---|---|
+| `1` / `2` | follow the UGV / the UAV (`run_team.py`; `run_nav.py` and `run_uav.py` have one target, key `1`) |
+| `0` | free camera (normal Isaac Gym mouse / WASD control) |
+| `←` `→` / `↑` `↓` | orbit by 15° / zoom in, out |
+| `P` | pause |
+
+```bash
+source ~/anaconda3/etc/profile.d/conda.sh && conda activate gleam && export LD_LIBRARY_PATH=$CONDA_PREFIX/lib:$LD_LIBRARY_PATH
+# Warthog + Starling in the pond twin, live, following the Warthog
+python scripts/run_team.py --config configs/pond.json --waypoints 160 300 185 400 140 460 135 330 \
+    --speed 3 --collision voxel --no-record --out outputs/team/pond_live
+```
+
+- `run_team.py --follow {ugv,uav,free}` sets the camera at start; `run_nav.py` / `run_uav.py` use `--free-camera` to start free.
+- `run_team.py --no-record` skips the five recording cameras and the videos (only the CSVs and `result.json` are written).
+  Recording makes the sim run roughly 10× slower than real time on the pond twin, so use it for live viewing.
+- Loading the pond twin (19.2 M visual faces + voxel collision) takes 1–2 minutes with no output before the window responds.
+
+**Verification (pond twin, voxel collision).** Warthog + box-model Starling, `--speed 3`, before the yaw-rate loop
+(`outputs/team/pond_warthog_starling`): both reached all 3 waypoints; Warthog 412 m in 377 s on a 322 m path (it loses time
+turning at waypoints), goal error 0.37 m; Starling 328 m, 0 contacts. Starling with the mesh model alone
+(`outputs/uav/pond_starling_mesh`, `--speed 4`): 2 waypoints, 89.0 m in 35.5 s, goal error 0.09 m, max cross-track 1.15 m.
+The Warthog + mesh-model Starling combination and the viewer keys have only been smoke-tested (a few seconds, no errors).
 
 ## 6. Structure collision (mesh collision for buildings / trees / cars)
 
@@ -212,48 +306,6 @@ python scripts/build_collision.py --config configs/library.json --mode voxel    
 Comparison videos: `outputs/uav/tree_compare.mp4`, `outputs/uav/box_compare.mp4` (left ON, right OFF, third person).
 
 
-
----
-# Datasets
-## 1. 2026 03 07 snowy bluewall
-Sensors: Inertial Labs RESEPI + Hesai 32ch LiDAR + Sony a5100
-Data (https://drive.google.com/drive/u/1/folders/1MhfiWRgno-qihtz96PdWmms9i4fMCdGZ):
-2026-03-07-18-07-32 (24 GB)	33 min run, 796 photos	PPK post-processing finished. Main session
-2026-03-04-23-35-52 (1.5 GB)	20 s, 11 photos, lidar.scan 94 MB	raw only (no ppk.txt). A test capture.
-
-```bash
-camera/<serial>_<t0>_<t1>.jpg   796 photos, 6000×4000, Sony ILCE-5100
-                                t is in µs, t/1e6 − 1e9 = LAS gps_time. EXIF orientation=3 (rotated 180°)
-ins/ppk.txt                     PPK trajectory 125 Hz: Week GPSTime UTCTime Lon Lat H-Ell Heading Pitch Roll
-ins/trajectories/ppk/*.txt      5 copies of the same trajectory differing only in geoid (WGS84 ellipsoid, GEOID18 etc.)
-ins/SBET.OUT                    the same trajectory (SBET binary)
-ins/*-imu.imr, *-gnss.gps etc.  raw IMU/GNSS and Waypoint Inertial Explorer intermediate files
-data/hamp0660.*, igu*.sp3       PPK base station data (CORS 'hamp', RINEX obs/nav, precise ephemeris)
-data/RESEPI-*.data (57 files, 15 GB) raw device logs
-processed_ppk.pcmp              LiDAR lever arm, boresight, mount angle (pitch −45°), per-laser corrections
-processed_ppk.pcpp              camera lever arm (0, −0.08, −0.048), boresight, mount −45°, photo list
-log.txt                         collection summary: GNSS satellite count (21–25 for 70%), IMU statistics, range filter 8–200 m
-```
-
-## 2. Airborne.las EE2023
-Sensors: Inertial Labs RESEPI + Hesai 32ch LiDAR + DJI drone camera
-Data (https://drive.google.com/drive/u/1/folders/1kBTbf2Wi2AtV4I8o0_BCfMtxHIy65xED):
-
-```bash
-Aerial Images/RegionXX/DJI_*.JPG   25 regions, 12,514 photos
-    mostly Mavic 2 Pro (5472×3648, no RTK, altitude about 122 m), vertical (nadir) capture
-    Region17/18/19/23/24/25/26/WEB are oblique captures (gimbal −65°)
-    only Region08_09_10_15_16 is Mavic 3E + PPK files (.nav/.obs/Timestamp)
-AlignedChunksViaPointClouds/
-    *_SubregionSet_1.psx/.files   chunk 17(R29), 18(R22), 38(R36_37_38_44), 40/41 merged
-    *_SubregionSet_2_*.psx/.files chunk 10(R26), 14(R25), 15(R24), 16(R23), 37–39 merged
-      each chunk: chunk.zip/doc.xml (aligned camera poses, calibration, chunk→ECEF transform)
-                0/depth_maps (EXR, 1/8 of the original resolution), dense_cloud (proprietary .oc3)
-                point_cloud (tie points), merged chunks also have elevation (DEM)
-    transects.shp, Set2_Chunks*.png (screenshots before/after GCP alignment)
-```
-
-
 ---
 
 # RSS2027 Digital Twin (main pipeline)
@@ -300,7 +352,7 @@ python scripts/run_nav.py --waypoints 95 150  103 166  125 172  138 168 \
   to a nearby cell with 1 m of margin (the moved distance is printed).
 - `--plan-only`: only makes `plan.png`, without the sim. Without `--headless` a viewer window opens.
 - `--collision {mesh,voxel,none}`: 3D structure collision shape (section 6). `none` leaves only the visual (this is also the state when the corresponding npz file is missing).
-- `--robot {limo,jackal,husky}`, `--speed`, `--cam-pitch-deg` (D455 downward angle), `--variant crop`.
+- `--robot {warthog,limo,jackal,husky}` (default `warthog`, section 5c), `--speed`, `--cam-pitch-deg` (D455 downward angle), `--variant crop`.
 - To use another session, create `configs/<name>.json` and pass it with `--config` (`session_dir`, `las`, `bbox_utm`, `origin`).
 
 `run_nav.py` output (`--out` folder):
@@ -470,7 +522,7 @@ the plaza and lawn have photo colour, while trees and the upper parts of buildin
 **Navigation example (`outputs/nav/run_000`)**
 
 ```bash
-python scripts/run_nav.py --waypoints 95 150  103 166  125 172  138 168 --out outputs/nav/run_000 --headless
+python scripts/run_nav.py --robot limo --waypoints 95 150  103 166  125 172  138 168 --out outputs/nav/run_000 --headless
 ```
 
 | Item | Value |
@@ -545,9 +597,9 @@ python scripts/crop_las.py --las ~/Desktop/Airborne.las --center 703437 4696145 
 | Purpose | conda env | Notes |
 |---|---|---|
 | Data processing (`build_twin.py`, `eval_vo.py`, `prepare_robots.py`, auxiliary tools) | `umasslidar` (miniforge, py3.10) | `pip install "laspy[lazrs]" open3d trimesh pillow scipy opencv-python-headless xatlas pycolmap matplotlib xacro pycollada fast-simplification` |
-| Simulation (`run_nav.py`, `run_uav.py`) | `gleam` (anaconda3, py3.8, Isaac Gym Preview 4) | before running: `export LD_LIBRARY_PATH=$CONDA_PREFIX/lib:$LD_LIBRARY_PATH` |
+| Simulation (`run_nav.py`, `run_uav.py`, `run_team.py`) | `gleam` (anaconda3, py3.8, Isaac Gym Preview 4) | before running: `export LD_LIBRARY_PATH=$CONDA_PREFIX/lib:$LD_LIBRARY_PATH` |
 
-Robot URDFs are built by `scripts/prepare_robots.py` without ROS (Jackal and Husky clone the Clearpath repos,
+Robot URDFs are built by `scripts/prepare_robots.py` without ROS (Warthog, Jackal and Husky clone the Clearpath repos,
 LIMO uses `~/Documents/limo/agilex_open_class/limo/limo_description`). After xacro → URDF and DAE → OBJ conversion it
 attaches `d455_link` and records wheel radius, track and camera link in `assets/robots/robots.json`.
 
@@ -557,12 +609,12 @@ attaches `d455_link` and records wheel radius, track and camera link in `assets/
 configs/blue_wall.json      session config (session_dir, las, bbox_utm, origin)
 scripts/
   build_twin.py             session → digital twin (prep / calib / ground / bake / export)
-  run_nav.py                LIMO waypoint navigation + three-view recording (Isaac Gym)
-  run_uav.py                quadrotor waypoint flight + RGB-D recording (Isaac Gym)
-  run_team.py               LIMO + quadrotor running together (same A* path) + RGB-D recording of both robots (Isaac Gym)
+  run_nav.py                UGV waypoint navigation + three-view recording (Isaac Gym)
+  run_uav.py                UAV (Starling / quad) waypoint flight + RGB-D recording (Isaac Gym)
+  run_team.py               UGV + UAV running together (same A* path) + RGB-D recording of both robots (Isaac Gym)
   build_collision.py        3D structure static collision: mesh mode (simplified visual tiles) / voxel mode (point cloud → closed voxel shell)
   eval_vo.py                SfM from photos only → comparison with INS
-  prepare_robots.py         robot URDF preparation
+  prepare_robots.py         robot URDF preparation (--starling fetches the Starling 2 Max meshes)
   select_region.py          pick an area on the overview map and crop it to a LAS
   build_twin_site.py        cropped coloured point cloud LAS → digital twin (no photos or trajectory)
   build_twin_aerial.py      Metashape aerial photo project → digital twin (EE2023, configs/blue_wall_aerial.json)
