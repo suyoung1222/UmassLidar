@@ -1,0 +1,485 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>UMass LiDAR Digital Twin</title>
+  <meta name="description" content="Building photo-textured, simulation-ready digital twins of the UMass Amherst campus from mobile LiDAR, photos and INS.">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="static/style.css">
+</head>
+<body>
+
+<!-- ============================== NAV ============================== -->
+<nav class="topnav">
+  <div class="wrap navrow">
+    <a class="brand" href="#top">UMass LiDAR Twin</a>
+    <div class="navlinks">
+      <a href="#dataset">Dataset</a>
+      <a href="#pipeline">Pipeline</a>
+      <a href="#guide">Quick guide</a>
+      <a href="#results">Results</a>
+      <a href="#citation">Citation</a>
+    </div>
+  </div>
+</nav>
+
+<!-- ============================== HERO ============================== -->
+<header id="top" class="hero">
+  <div class="wrap">
+    <p class="eyebrow">RSS 2027 · Project page</p>
+    <h1>From Campus LiDAR to Simulation-Ready Digital Twins</h1>
+    <p class="subtitle">
+      A pipeline that turns one walk with a mobile mapping payload (LiDAR + camera + INS) into a
+      photo-textured, collision-ready 3D world for ground and aerial robots in Isaac Gym.
+    </p>
+    <!-- TODO: authors / affiliations -->
+    <p class="authors">
+      <span>Author One<sup>1</sup></span>
+      <span>Author Two<sup>1</sup></span>
+      <span>Author Three<sup>1</sup></span>
+    </p>
+    <p class="affil"><sup>1</sup>University of Massachusetts Amherst</p>
+
+    <div class="buttons">
+      <a class="btn" href="#" aria-disabled="true">Paper (soon)</a>
+      <a class="btn primary" href="https://github.com/suyoung1222/UmassLidar">Code</a>
+      <a class="btn" href="#dataset">Dataset</a>
+      <a class="btn" href="#results">Video</a>
+    </div>
+
+    <!-- TODO: teaser video, e.g. static/videos/teaser.mp4 (outputs/team/*/combined.mp4) -->
+    <figure class="media teaser">
+      <div class="ph" data-file="static/videos/teaser.mp4">
+        Teaser video: real photo vs. twin render, then UGV + UAV driving through the twin
+      </div>
+      <figcaption>
+        One 33-minute walk around the Blue Wall area becomes a 234 × 260 m textured twin in which a LIMO
+        and a quadrotor record RGB-D data.
+      </figcaption>
+    </figure>
+  </div>
+</header>
+
+<main>
+
+<!-- ============================== OVERVIEW ============================== -->
+<section id="overview" class="section">
+  <div class="wrap narrow">
+    <h2>Overview</h2>
+    <p>
+      Robot learning needs data from real places, but collecting every situation in the real world is slow, costly and risky.
+      We build <b>digital twins</b> of the UMass Amherst campus directly from raw sensor data.
+      The <b>LiDAR</b> point cloud provides the 3D geometry, and the <b>photos</b> provide the appearance for realistic rendering. The <b>INS trajectory</b> (accuracy under ~)
+      gives the 2D–3D correspondences between images and geometry. (an external VIO,SFM, or SLAM can be used instead.)
+      The finished twin loads directly into Isaac Gym, where ground robots (e.g. Clearpath Warthog) and aerial robots
+      (e.g. ModalAI Starling) navigate it while carrying simulated onboard sensors such as an Intel RealSense D455 RGB-D camera.
+    </p>
+  </div>
+</section>
+
+<!-- ============================== Hardware Platform ============================== -->
+
+<!-- ============================== DATASET ============================== -->
+<section id="dataset" class="section alt">
+  <div class="wrap">
+    <h2>Hardware and datasets</h2>
+    <p class="lead">
+      All data were collected on the UMass Amherst campus with survey-grade equipment. The same LiDAR payload family and
+      mapping camera are used across sessions; what changes is the viewpoint: <b>aerial</b> (drone) or <b>ground</b> (on foot).
+    </p>
+
+    <!-- ---------------- Hardware platform ---------------- -->
+    <h3>Hardware platform</h3>
+    <div class="grid two hw-main">
+      <figure class="media product">
+        <img src="static/images/hw_resepi.png" alt="Inertial Labs RESEPI XT-32 LiDAR payload">
+      </figure>
+      <div class="card">
+        <h4>Inertial Labs RESEPI XT-32 <span class="tag">LiDAR payload</span></h4>
+        <p class="hw-desc">One compact unit (≈ 1.7 kg) that records everything needed for a georeferenced map. The same payload
+          can be flown on a drone or carried on foot.</p>
+        <ul class="hw-list">
+          <li><b>LiDAR</b> 32-channel spinning scanner (XT-32), 360° around, up to ~120 m</li>
+          <li><b>INS</b> GNSS + tactical-grade IMU; after PPK, cm-level position for every LiDAR point and photo</li>
+          <li><b>Camera</b> 24 MP RGB (Sony a5100, 16 mm), triggered every few seconds</li>
+        </ul>
+        <p class="note">Full specs: <a href="https://lidarpayload.com/resepi-lidar-payload-slam-solutions-home/resepi-xt-32/">manufacturer page</a>.</p>
+      </div>
+    </div>
+
+    <div class="grid two hw-sets">
+      <article class="card hw-set">
+        <div class="hw-set-head">
+          <span class="ds-num">Dataset 1</span>
+          <span class="view aerial">Aerial · drone</span>
+        </div>
+        <img src="static/images/dataset1_aerial.png" alt="Drones used to collect the aerial dataset">
+        <ul class="mini">
+          <li><b>DJI Mavic 2 Pro</b><span>Main survey drone (24 of 25 regions). 20 MP Hasselblad camera, ≈ 122 m AGL.</span></li>
+          <li><b>DJI Mavic 3 Enterprise (RTK)</b><span>One region set (08/09/10/15/16), with RTK + PPK logs for direct georeferencing.</span></li>
+          <li><b>Trimble R10 GNSS</b><span>Ground station: RTK survey of the ground control points.</span></li>
+        </ul>
+      </article>
+      <article class="card hw-set">
+        <div class="hw-set-head">
+          <span class="ds-num">Dataset 2</span>
+          <span class="view ground">Ground · handheld</span>
+        </div>
+        <img src="static/images/dataset2_ground.png" alt="RESEPI payload carried on foot for the ground dataset">
+        <p class="hw-desc">The RESEPI XT-32 is carried by hand while walking, so the LiDAR and camera see the scene from
+          close to a robot's height. No drone or ground control is needed: with the same payload you can
+          <b>collect your own site</b> and build a twin from it (see <a href="#guide">Quick guide</a>).</p>
+      </article>
+    </div>
+
+    <!-- ---------------- Dataset 1 ---------------- -->
+    <div class="dataset">
+      <div class="dataset-head">
+        <span class="ds-num">Dataset 1</span>
+        <h3 class="ds-title">EE2023 · campus-wide aerial survey</h3>
+        <span class="view aerial">Aerial view</span>
+      </div>
+      <div class="grid two">
+        <figure class="media">
+          <!-- TODO: orthomosaic or point cloud of the campus (e.g. Region24 around Blue Wall) -->
+          <div class="ph" data-file="static/images/ds_ee2023.jpg">Orthomosaic / aerial point cloud of the campus</div>
+          <figcaption>Drone photogrammetry of the whole campus, split into ≤ 600 m square subregions (one battery each).</figcaption>
+        </figure>
+        <div class="card">
+          <table class="spec">
+            <tr><th>When</th><td>April 8–20, 2023 (core campus flown over a holiday weekend)</td></tr>
+            <tr><th>Platform</th><td>DJI Mavic 2 Pro (24 region folders), DJI Mavic 3 Enterprise RTK (1 folder: Regions 08/09/10/15/16)</td></tr>
+            <tr><th>Coverage</th><td>≈ 6.5 km² · 25 regions · <b>12,514 photos</b> (135 GB)</td></tr>
+            <tr><th>Flight</th><td>≈ 122 m AGL · 75% side overlap · nadir, plus oblique (−65° gimbal) over the core campus</td></tr>
+            <tr><th>Control</th><td>GCPs surveyed with a Trimble R10 (RTK)</td></tr>
+            <tr><th>Processed</th><td>Agisoft Metashape: aligned camera poses, depth maps, dense cloud, DEM</td></tr>
+            <tr><th>Use here</th><td>Large-area twins seen from above; depth maps are back-projected into a point cloud (<code>build_twin_aerial.py</code>)</td></tr>
+          </table>
+          <p class="note">Survey led by the UMass <a href="https://websites.umass.edu/trimble-tech-lab/projects/mapping-the-umass-amherst-campus-using-uas-aerial-imagery-2023/">Trimble Tech Lab</a> team.</p>
+        </div>
+      </div>
+    </div>
+
+    <!-- ---------------- Dataset 2 ---------------- -->
+    <div class="dataset">
+      <div class="dataset-head">
+        <span class="ds-num">Dataset 2</span>
+        <h3 class="ds-title">CS2026 · Snowy Blue Wall</h3>
+        <span class="view ground">Ground view</span>
+      </div>
+      <div class="grid two">
+        <figure class="media">
+          <!-- TODO: sample ground photo with snow + walked trajectory on a map -->
+          <div class="ph" data-file="static/images/ds_bluewall.jpg">Ground photo + walked trajectory</div>
+          <figcaption>RESEPI XT-32 carried on foot; LiDAR and camera point 45° forward-down, close to a robot's viewpoint.</figcaption>
+        </figure>
+        <div class="card">
+          <table class="spec">
+            <tr><th>When</th><td>2026-03-07 · overcast, snow on the ground</td></tr>
+            <tr><th>Platform</th><td>RESEPI XT-32, handheld (walking)</td></tr>
+            <tr><th>Coverage</th><td>33 min · 2.1 km walked · 110 × 147 m around the Blue Wall · twin area 234 × 260 m</td></tr>
+            <tr><th>LiDAR</th><td><b>443 M points</b>, georeferenced LAS (UTM 18N) with per-point <code>gps_time</code>, laser id, intensity, RGB</td></tr>
+            <tr><th>Camera</th><td><b>796 photos</b>, 6000 × 4000, software-triggered every ~2.5 s</td></tr>
+            <tr><th>INS</th><td>PPK trajectory at 125 Hz (base station: HAMP CORS)</td></tr>
+            <tr><th>Use here</th><td>Main twin: photo-textured from the ground, close to what a robot camera sees (<code>build_twin.py</code>)</td></tr>
+          </table>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ============================== PIPELINE ============================== -->
+<section id="pipeline" class="section">
+  <div class="wrap">
+    <h2>Pipeline overview</h2>
+    <p class="lead">Preprocessed sensor data goes through three construction stages and comes out as a digital twin that Isaac Gym loads directly. Each stage writes its own files and is cached, so a rerun only does what changed.</p>
+
+    <figure class="media pipeline-fig">
+      <a href="static/images/pipeline.png"><img src="static/images/pipeline.png"
+        alt="Pipeline: preprocessed sensor data, then geometry, appearance and collision, giving a simulation-ready digital twin used for UGV and UAV experiments in Isaac Gym"></a>
+      <figcaption>From a metric point cloud with posed photos, we build geometry, bake photo textures and derive a
+        watertight collision shell. The resulting twin loads directly into Isaac Gym for ground and aerial robot experiments
+        with simulated RGB-D sensors. Monospace labels are the files each stage writes.</figcaption>
+    </figure>
+
+    <ol class="stages">
+      <li class="stage data">
+        <div class="num">0</div>
+        <div>
+          <p class="phase-tag">Sensor data</p>
+          <h4>Preprocessed sensor data: metric point cloud + posed photos</h4>
+          <p>Every input is first brought into one UTM frame as a point cloud plus photos with known poses. How depends on the source:</p>
+          <ul class="src-list">
+            <li><b>Ground (Dataset 2)</b> Each LiDAR point is matched to the sensor pose that fired it (<code>gps_time</code> + INS).
+              A spinning laser sweeps a cone, so <code>(point direction · spin axis)</code> is constant per laser; this fixes the LAS ↔
+              trajectory offset (ring residual 3.3° → 0.008°). Photos are then registered to the LiDAR map by block matching,
+              with a small per-photo pose correction (reprojection 134 → 17 px).</li>
+            <li><b>Aerial (Dataset 1)</b> Metashape camera poses and depth maps are back-projected into a point cloud and shifted into the LiDAR frame.</li>
+            <li><b>LAS only</b> A coloured point cloud cropped to a site; no photos.</li>
+          </ul>
+        </div>
+      </li>
+      <li class="stage twin">
+        <div class="num">1</div>
+        <div>
+          <p class="phase-tag">Digital twin construction</p>
+          <h4>Geometry: 2.5D ground + 3D structure</h4>
+          <p><b>Ground</b> is a 0.25 m height grid with a label per cell (ground / obstacle / roof / unobserved). It is what robots
+            drive on and what the planner reads as the drivable map. <b>Structures</b> such as walls, trees and cars are kept in 3D:
+            points above the ground get normals oriented toward the sensor that saw them, and screened Poisson builds a surface
+            per 20 m tile. Faces far from any point are removed.</p>
+          <p class="files"><code>ground.glb</code> <code>map.png</code> <code>s_*.glb</code></p>
+        </div>
+      </li>
+      <li class="stage twin">
+        <div class="num">2</div>
+        <div>
+          <p class="phase-tag">Digital twin construction</p>
+          <h4>Appearance: texture baking</h4>
+          <p>For every texel (1 cm ground, 3 cm structure) the colour comes from the best available source: photos that see it
+            (occlusion-tested against LiDAR depth) → point RGB → low-frequency RGB × intensity shading → a per-material colour
+            learned from this site's photos. LiDAR intensity barely predicts brightness (correlation −0.07), so it only separates
+            materials and adds fine shading. Each texel records which source it came from.</p>
+          <p class="files"><code>g_*.png</code> <code>*_source.png</code></p>
+        </div>
+      </li>
+      <li class="stage twin">
+        <div class="num">3</div>
+        <div>
+          <p class="phase-tag">Digital twin construction</p>
+          <h4>Collision: watertight voxel shell</h4>
+          <p>The visual mesh has holes where points are sparse, and a robot could drive through them. Collision is built from the
+            points instead: they fill a 12.5 cm voxel grid, morphological closing fills gaps up to 0.75 m, and the outer surface
+            becomes a closed mesh. Points within 0.25 m of the collision surface rise from 28.9% (visual mesh) to 95.4%.</p>
+          <p class="files"><code>structure_collision_voxel.npz</code></p>
+        </div>
+      </li>
+      <li class="stage sim">
+        <div class="num">4</div>
+        <div>
+          <p class="phase-tag">Robot experiments</p>
+          <h4>Simulation-ready twin → Isaac Gym</h4>
+          <p>Visual tiles, collision mesh, drivable map and sky are packed as one twin that Isaac Gym loads directly. Ground robots
+            (LIMO, Warthog) plan with A* on the drivable map and follow it with pure pursuit; aerial robots (quadrotor, Starling) fly the
+            same waypoints above the structures. Both carry a simulated RealSense D455, so every run records RGB-D frames,
+            trajectories and navigation results from the real campus.</p>
+          <p class="files"><code>assets/twin/&lt;site&gt;/twin.json</code> <code>combined.mp4</code> <code>depth/</code> <code>trajectory.csv</code></p>
+        </div>
+      </li>
+    </ol>
+  </div>
+</section>
+
+<!-- ============================== QUICK GUIDE ============================== -->
+<section id="guide" class="section alt">
+  <div class="wrap">
+    <h2>Quick guide</h2>
+    <p class="lead">
+      The left column rebuilds our twin from the released data. The right column does the same thing with data
+      you collected yourself. Each row is the same step, so you can compare them side by side.
+    </p>
+
+    <div class="guide">
+      <div class="guide-head">
+        <div class="col-head ours">Reproduce our twin <span>Blue Wall session</span></div>
+        <div class="col-head custom">Your own data <span>any coloured LAS, or a RESEPI-style session</span></div>
+      </div>
+
+      <!-- Step 0 -->
+      <div class="guide-row">
+        <div class="step-label"><b>0</b> Setup</div>
+        <div class="cell">
+          <p>Two conda environments: one for processing, one for Isaac Gym.</p>
+<pre><code>git clone https://github.com/suyoung1222/UmassLidar.git
+cd UmassLidar
+conda activate umasslidar
+pip install "laspy[lazrs]" open3d trimesh pillow scipy \
+    opencv-python-headless xatlas pycolmap matplotlib \
+    xacro pycollada fast-simplification
+python scripts/prepare_robots.py   # robot URDFs, once</code></pre>
+        </div>
+        <div class="cell">
+          <p>Same setup. Isaac Gym Preview 4 goes in a separate <code>gleam</code> env (Python 3.8).</p>
+<pre><code>conda activate gleam
+export LD_LIBRARY_PATH=$CONDA_PREFIX/lib:$LD_LIBRARY_PATH</code></pre>
+        </div>
+      </div>
+
+      <!-- Step 1 -->
+      <div class="guide-row">
+        <div class="step-label"><b>1</b> Data</div>
+        <div class="cell">
+          <p>Download the session (LAS, photos, <code>ins/ppk.txt</code>, <code>*.pcmp/*.pcpp</code>) from the dataset link.
+            <code>configs/blue_wall.json</code> already points to it.</p>
+<pre><code>{
+  "name": "blue_wall",
+  "session_dir": "~/mydata/.../RESEPI-A84717-2026-03-07-18-07-32",
+  "las": "~/mydata/.../blue_wall.las",
+  "bbox_utm": [703424.6, 4696099.4, 703658.6, 4696359.4],
+  "origin":   [703424.6, 4696099.4, 35.66]
+}</code></pre>
+        </div>
+        <div class="cell">
+          <p><b>Option A · only a LAS</b> (positions + RGB, e.g. airborne or any scanner). Draw a box on the overview map to crop a site:</p>
+<pre><code>python scripts/las_overview.py --las my_scan.las --out data/overview
+python scripts/select_region.py --las my_scan.las --name mysite
+# → data/sites/mysite.las</code></pre>
+          <p><b>Option B · full session</b> (LAS + photos + INS). Write <code>configs/mysite.json</code> with the same keys as on the left
+            (<code>session_dir</code>, <code>las</code>, <code>bbox_utm</code>, <code>origin</code>).</p>
+        </div>
+      </div>
+
+      <!-- Step 2 -->
+      <div class="guide-row">
+        <div class="step-label"><b>2</b> Build twin</div>
+        <div class="cell">
+          <p>Registration, calibration, mesh and texture. Cached per stage.</p>
+<pre><code>python scripts/build_twin.py
+# quick test on a 30 m area
+python scripts/build_twin.py --region 85 170 115 200 --name crop</code></pre>
+        </div>
+        <div class="cell">
+<pre><code># Option A: LAS only (a few minutes for ~10 ha)
+python scripts/build_twin_site.py --las data/sites/mysite.las
+# → creates configs/mysite.json
+
+# Option B: full session
+python scripts/build_twin.py --config configs/mysite.json</code></pre>
+          <p class="note">Tune with <code>--tex-res</code>, <code>--voxel</code>, <code>--min-h</code>; rebake with <code>--redo bake</code>.</p>
+        </div>
+      </div>
+
+      <!-- Step 3 -->
+      <div class="guide-row">
+        <div class="step-label"><b>3</b> Collision</div>
+        <div class="cell">
+<pre><code>python scripts/build_collision.py               # mesh (seconds)
+python scripts/build_collision.py --mode voxel  # recommended</code></pre>
+        </div>
+        <div class="cell">
+<pre><code>python scripts/build_collision.py --config configs/mysite.json
+python scripts/build_collision.py --config configs/mysite.json --mode voxel</code></pre>
+        </div>
+      </div>
+
+      <!-- Step 4 -->
+      <div class="guide-row">
+        <div class="step-label"><b>4</b> Check</div>
+        <div class="cell">
+          <p>Pick waypoints on <code>assets/twin/blue_wall/map.png</code> (green = drivable, 10 m grid). Optionally inspect the
+            texture in Blender from the robot's camera height.</p>
+<pre><code>blender --python scripts/blender_twin.py -- \
+    --twin assets/twin/blue_wall/full --at 100 160 90</code></pre>
+        </div>
+        <div class="cell">
+          <p>Same, with <code>assets/twin/mysite/map.png</code>. Colour grading chosen in Blender can be written back into
+            the config as <code>"grade": {...}</code> and baked in.</p>
+        </div>
+      </div>
+
+      <!-- Step 5 -->
+      <div class="guide-row">
+        <div class="step-label"><b>5</b> Simulate</div>
+        <div class="cell">
+<pre><code>conda activate gleam
+python scripts/run_nav.py  --waypoints 95 150 103 166 125 172 138 168 \
+    --out outputs/nav/run_000 --headless --collision voxel
+python scripts/run_uav.py  --waypoints 95 150 103 166 125 172 138 168 \
+    --out outputs/uav/run_000 --headless --collision voxel
+python scripts/run_team.py --waypoints 95 150 103 166 125 172 138 168 \
+    --out outputs/team/run_000 --headless --collision voxel</code></pre>
+        </div>
+        <div class="cell">
+<pre><code>python scripts/run_nav.py --config configs/mysite.json \
+    --waypoints X0 Y0 X1 Y1 ... --out outputs/nav/mysite_000 \
+    --headless --collision voxel
+# --plan-only to check the A* path first
+# --robot {limo,jackal,husky}</code></pre>
+          <p class="note">Outputs: <code>combined.mp4</code>, D455 RGB / depth (uint16 mm), <code>trajectory.csv</code>, <code>result.json</code>.</p>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ============================== RESULTS ============================== -->
+<section id="results" class="section">
+  <div class="wrap">
+    <h2>Results</h2>
+    <p class="lead">Real photos next to the twin rendered from the same pose, and robots driving through it.</p>
+
+    <h3>Real vs. twin</h3>
+    <div class="grid two">
+      <!-- TODO: matching real photo / twin render pair -->
+      <figure class="media"><div class="ph" data-file="static/images/real_01.jpg">Real photo</div><figcaption>Sony a5100 photo</figcaption></figure>
+      <figure class="media"><div class="ph" data-file="static/images/twin_01.jpg">Twin render, same pose</div><figcaption>Twin render from the calibrated pose</figcaption></figure>
+    </div>
+
+    <h3>Robots in the twin</h3>
+    <div class="grid three">
+      <!-- TODO: outputs/nav, outputs/uav, outputs/team combined.mp4 -->
+      <figure class="media"><div class="ph" data-file="static/videos/ugv.mp4">UGV (LIMO) navigation</div><figcaption>LIMO, A* + pure pursuit</figcaption></figure>
+      <figure class="media"><div class="ph" data-file="static/videos/uav.mp4">UAV flight</div><figcaption>Quadrotor waypoint flight</figcaption></figure>
+      <figure class="media"><div class="ph" data-file="static/videos/team.mp4">UGV + UAV team</div><figcaption>Both robots on the same path</figcaption></figure>
+    </div>
+
+    <h3>Other campus sites</h3>
+    <div class="grid three">
+      <figure class="media"><div class="ph small" data-file="static/images/site_library.jpg">Library</div><figcaption>Library (airborne LAS, 9.9 ha)</figcaption></figure>
+      <figure class="media"><div class="ph small" data-file="static/images/site_pond.jpg">Pond</div><figcaption>Campus pond</figcaption></figure>
+      <figure class="media"><div class="ph small" data-file="static/images/site_aerial.jpg">Blue Wall (aerial)</div><figcaption>Blue Wall from drone photogrammetry</figcaption></figure>
+    </div>
+  </div>
+</section>
+
+<!-- ============================== CITATION ============================== -->
+<section id="citation" class="section alt">
+  <div class="wrap narrow">
+    <h2>Citation</h2>
+    <div class="codebox">
+      <button class="copy" type="button">Copy</button>
+<pre><code>@inproceedings{umasslidar2027,
+  title     = {From Campus LiDAR to Simulation-Ready Digital Twins},
+  author    = {Author One and Author Two and Author Three},
+  booktitle = {Robotics: Science and Systems (RSS)},
+  year      = {2027}
+}</code></pre>
+    </div>
+  </div>
+</section>
+
+</main>
+
+<footer class="footer">
+  <div class="wrap">
+    <p>University of Massachusetts Amherst · <a href="https://github.com/suyoung1222/UmassLidar">GitHub</a></p>
+  </div>
+</footer>
+
+<script>
+  // add a copy button to every code block
+  document.querySelectorAll('pre > code').forEach(code => {
+    const pre = code.parentElement;
+    if (pre.parentElement.classList.contains('codebox')) return;
+    const box = document.createElement('div');
+    box.className = 'codebox';
+    pre.replaceWith(box);
+    box.appendChild(pre);
+    const b = document.createElement('button');
+    b.className = 'copy'; b.type = 'button'; b.textContent = 'Copy';
+    box.prepend(b);
+  });
+  document.querySelectorAll('.codebox .copy').forEach(b => {
+    b.addEventListener('click', async () => {
+      const txt = b.parentElement.querySelector('code').innerText;
+      try { await navigator.clipboard.writeText(txt); b.textContent = 'Copied'; }
+      catch (e) { b.textContent = 'Failed'; }
+      setTimeout(() => b.textContent = 'Copy', 1200);
+    });
+  });
+</script>
+</body>
+</html>
