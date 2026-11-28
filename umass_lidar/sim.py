@@ -136,7 +136,9 @@ def robot_config(name):
 class WheeledRobot:
     """Skid-steer robot actor driven by (v, w) commands."""
 
-    def __init__(self, gym, sim, env, name, xy, yaw, h, res):
+    def __init__(self, gym, sim, env, name, xy, yaw, h, res, actor_name=None, collision_filter=1):
+        """collision_filter: bodies sharing a filter bit never collide, so one bit per robot switches
+        self-collision off and keeps robot-robot collision on."""
         self.gym, self.env, self.cfg = gym, env, robot_config(name)
         ro = gymapi.AssetOptions()
         ro.default_dof_drive_mode = int(gymapi.DOF_MODE_VEL)
@@ -150,7 +152,7 @@ class WheeledRobot:
         z = float(h[int(xy[1] / res), int(xy[0] / res)])
         t.p = gymapi.Vec3(xy[0], xy[1], z + self.cfg["wheel_radius"] * 2 + 0.15)
         t.r = gymapi.Quat.from_axis_angle(gymapi.Vec3(0, 0, 1), yaw)
-        self.actor = gym.create_actor(env, asset, t, name, 0, 1)   # filter=1: no self-collision
+        self.actor = gym.create_actor(env, asset, t, actor_name or name, 0, collision_filter)
         self.mass = sum(b.mass for b in gym.get_actor_rigid_body_properties(env, self.actor))
         props = gym.get_actor_dof_properties(env, self.actor)
         props["driveMode"].fill(gymapi.DOF_MODE_VEL)
@@ -194,23 +196,45 @@ class FollowViewer:
 
     targets: {name: (fn() -> (pos xyz, yaw), distance m)}. Keys: 1..9 follow that target, 0 free
     camera (normal Isaac Gym mouse / WASD control), LEFT/RIGHT orbit, UP/DOWN zoom, P pause,
-    T toggles manual driving (I/K forward / back, J/L turn; read it with teleop())."""
+    T toggles manual driving (I/K forward / back, J/L turn; read it with teleop()).
+    The number keys work on the top row and on the numpad.
 
-    def __init__(self, gym, sim, env, targets, follow=None):
+    overview: optional dict(center=(x, y), span=(sx, sy), ground_z, top_z) -> key M switches to a
+    fixed top view of that area (north up; UP/DOWN zoom). follow="top" starts there.
+    Trails: call track(name, pos) every step; each robot's travelled path is drawn as a line in its
+    own colour (N toggles them). In the top view the lines are drawn above every structure and
+    shifted so they still project onto the true ground position, so canopies never hide them."""
+
+    TOP = "top"
+    COLORS = [(1.0, 0.15, 0.15), (0.0, 0.85, 1.0), (1.0, 0.85, 0.0), (1.0, 0.2, 1.0), (0.2, 1.0, 0.2),
+              (1.0, 0.55, 0.0), (0.45, 0.45, 1.0), (1.0, 1.0, 1.0), (0.0, 0.9, 0.6)]
+
+    def __init__(self, gym, sim, env, targets, follow=None, overview=None, colors=None):
         self.gym, self.sim, self.env = gym, sim, env
         self.viewer = gym.create_viewer(sim, gymapi.CameraProperties())
         self.targets, self.names = targets, list(targets)
-        self.cur = follow if follow in targets else None
+        self.overview = overview
+        self.cur = follow if follow in targets or (follow == self.TOP and overview) else None
+        self.colors = colors or {n: self.COLORS[i % len(self.COLORS)] for i, n in enumerate(self.names)}
+        self.trails, self.show_trails = {n: [] for n in self.names}, True
         self.orbit, self.zoom, self.cam_yaw, self.paused = 0.0, 1.0, None, False
         self.manual, self.held = False, set()
         keys = {f"KEY_{i + 1}": f"follow{i}" for i in range(min(9, len(self.names)))}
+        keys.update({f"KEY_NUMPAD_{i + 1}": f"follow{i}" for i in range(min(9, len(self.names)))})
+        keys.update(KEY_NUMPAD_0="free", KEY_N="trails")
+        if overview:
+            keys.update(KEY_M="top")
         keys.update(KEY_0="free", KEY_LEFT="orbit+", KEY_RIGHT="orbit-", KEY_UP="zoom-", KEY_DOWN="zoom+",
-                    KEY_P="pause", KEY_T="teleop", KEY_I="t_fwd", KEY_K="t_back", KEY_J="t_left", KEY_L="t_right")
+                    KEY_P="pause", KEY_T="teleop", KEY_I="t_fwd", KEY_K="t_back", KEY_J="t_left", KEY_L="t_right",
+                    KEY_U="t_sl", KEY_O="t_sr", KEY_Y="t_up", KEY_H="t_down", KEY_EQUAL="gain+", KEY_MINUS="gain-")
+        self.gain = 1.0
         for k, name in keys.items():
             if hasattr(gymapi, k):
                 gym.subscribe_viewer_keyboard_event(self.viewer, getattr(gymapi, k), name)
         print("[viewer] keys: " + "  ".join(f"{i + 1}=follow {n}" for i, n in enumerate(self.names)) +
-              "  0=free camera  LEFT/RIGHT=orbit  UP/DOWN=zoom  P=pause  T=manual drive (I/K/J/L)", flush=True)
+              ("  M=top view (whole map)" if overview else "") +
+              "  0=free camera  LEFT/RIGHT=orbit  UP/DOWN=zoom  N=trails on/off  P=pause  "
+              "T=manual drive (I/K/J/L)", flush=True)
 
     def _events(self):
         for e in self.gym.query_viewer_action_events(self.viewer):
@@ -226,12 +250,19 @@ class FollowViewer:
                 self.cur, self.cam_yaw, self.orbit = self.names[int(e.action[6:])], None, 0.0
             elif e.action == "free":
                 self.cur = None
+            elif e.action == "top":
+                self.cur, self.zoom = self.TOP, 1.0
+            elif e.action == "trails":
+                self.show_trails = not self.show_trails
             elif e.action.startswith("orbit"):
                 self.orbit += np.radians(15) * (1 if e.action[-1] == "+" else -1)
             elif e.action.startswith("zoom"):
                 self.zoom = float(np.clip(self.zoom * (1.25 if e.action[-1] == "+" else 0.8), 0.3, 8.0))
             elif e.action == "pause":
                 self.paused = not self.paused
+            elif e.action.startswith("gain"):
+                self.gain = float(np.clip(self.gain * (1.25 if e.action[-1] == "+" else 0.8), 0.1, 4.0))
+                print(f"[viewer] teleop speed x{self.gain:.2f}", flush=True)
 
     def teleop(self, v_max, w_max=1.2):
         """(v, w) from the held I/K/J/L keys while manual drive is on, else None."""
@@ -240,8 +271,65 @@ class FollowViewer:
         h = self.held
         return (v_max * (("t_fwd" in h) - ("t_back" in h)), w_max * (("t_left" in h) - ("t_right" in h)))
 
+    def axes(self):
+        """Held teleop keys as (forward, left, up, yaw-left) in -1..1, times the speed gain (= / - keys):
+        I/K forward / back, U/O strafe left / right, Y/H up / down, J/L turn left / right."""
+        h, g = self.held, self.gain
+        return (g * (("t_fwd" in h) - ("t_back" in h)), g * (("t_sl" in h) - ("t_sr" in h)),
+                g * (("t_up" in h) - ("t_down" in h)), float(("t_left" in h) - ("t_right" in h)))
+
+    def track(self, name, pos, min_step=0.25):
+        """Append the robot's position to its trail (ignored until it has moved min_step)."""
+        tr = self.trails[name]
+        if not tr or np.linalg.norm(np.asarray(pos) - tr[-1]) >= min_step:
+            tr.append(np.array(pos, dtype=np.float32))
+
+    def _top_camera(self):
+        """(camera xyz) of the fixed top view; never below the tallest structure."""
+        o = self.overview
+        w, hgt = self.gym.get_viewer_size(self.viewer).x, self.gym.get_viewer_size(self.viewer).y
+        aspect = w / max(hgt, 1)
+        H = max(o["span"][0], o["span"][1] * aspect) / 2 * 1.05 * self.zoom       # horizontal fov 90 deg
+        return np.array([o["center"][0], o["center"][1], max(o["ground_z"] + H, o["top_z"] + 30.0)])
+
+    def _draw_trails(self):
+        self.gym.clear_lines(self.viewer)
+        if not self.show_trails:
+            return
+        top = self._top_camera() if self.cur == self.TOP else None
+        for name, tr in self.trails.items():
+            if len(tr) < 2:
+                continue
+            P = np.array(tr, dtype=np.float32)
+            P[:, 2] += 0.4
+            offs = [np.zeros(3, np.float32)]
+            if top is not None:
+                # lift above every structure, scaled towards the camera axis so the projection is unchanged
+                zl = self.overview["top_z"] + 5.0
+                k = (top[2] - zl) / np.maximum(top[2] - P[:, 2], 1.0)
+                P[:, :2] = top[:2] + (P[:, :2] - top[:2]) * k[:, None]
+                P[:, 2] = zl
+                w = 0.0012 * (top[2] - zl)                                        # ~3 px wide
+                offs = [np.array(o, np.float32) * w for o in ((0, 0, 0), (1, 0, 0), (-1, 0, 0), (0, 1, 0), (0, -1, 0))]
+                c = P[-1]; r = 0.012 * (top[2] - zl)                              # marker ring at the robot
+                a = np.linspace(0, 2 * np.pi, 17)
+                ring = np.column_stack([c[0] + r * np.cos(a), c[1] + r * np.sin(a), np.full(17, c[2])]).astype(np.float32)
+                segs = [np.hstack([ring[:-1], ring[1:]])]
+            else:
+                segs = []
+            segs += [np.hstack([P[:-1] + o, P[1:] + o]) for o in offs]
+            V = np.ascontiguousarray(np.vstack(segs), dtype=np.float32)
+            C = np.ascontiguousarray(np.tile(np.array(self.colors[name], np.float32), (len(V), 1)))
+            self.gym.add_lines(self.viewer, self.env, len(V), V, C)
+
     def _draw(self):
-        if self.cur is not None:
+        self._draw_trails()
+        if self.cur == self.TOP:
+            cam = self._top_camera()
+            o = self.overview                                   # tiny y offset: north up on screen
+            self.gym.viewer_camera_look_at(self.viewer, self.env, gymapi.Vec3(cam[0], cam[1] - 1e-3 * cam[2], cam[2]),
+                                           gymapi.Vec3(cam[0], cam[1], o["ground_z"]))
+        elif self.cur is not None:
             fn, dist = self.targets[self.cur]
             pos, yaw = fn()
             if self.cam_yaw is None:
@@ -267,6 +355,7 @@ class FollowViewer:
         return True
 
     def close(self):
+        self.gym.clear_lines(self.viewer)
         self.gym.destroy_viewer(self.viewer)
 
 

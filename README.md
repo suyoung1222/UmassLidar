@@ -89,7 +89,7 @@ Example files (https://drive.google.com/file/d/1IPwI7H2PyYNpbdXkeR2n2e6SCLDwieo6
 - **Isaac Gym Preview 4** env (section "Environments"), Linux + NVIDIA GPU.
 
 ```bash
-conda activate gleam && export LD_LIBRARY_PATH=$CONDA_PREFIX/lib:$LD_LIBRARY_PATH
+conda activate umasstwin
 python scripts/demo.py
 ```
 
@@ -104,14 +104,14 @@ python scripts/demo.py
 - Loading takes 1–2 minutes before the window responds. Close the window or press Ctrl-C to stop.
 - `python scripts/demo.py --record` also writes the videos to `outputs/demo/` (about 10× slower). Other arguments are passed
   on to `scripts/run_team.py`, e.g. `--speed 2 --follow uav --collision none`.
-- If demo.py reports something missing it prints how to get it. Details on the robots and the viewer are in section 5c.
+- If demo.py reports something missing it prints how to get it. Details on the robots and the viewer are in section 5d.
 
 
 # Quick guideline
 ## 1. Select region.
 
 ```bash
-conda activate umasslidar
+conda activate umasstwin
 # (first time only) generate the full overview map
 python scripts/las_overview.py --las ~/Desktop/Airborne.las --out data/overview
 ```
@@ -135,7 +135,7 @@ python scripts/select_region.py --name pond --polygon
 ## 2. Build twin from the region
 
 ```bash
-conda activate umasslidar
+conda activate umasstwin
 python scripts/build_twin_site.py --las data/sites/pond.las      # library 9.9 ha: a few minutes
 python scripts/build_collision.py --config configs/pond.json                # mesh collision for buildings / trees / cars (tens of seconds, also the reference for voxel)
 python scripts/build_collision.py --config configs/pond.json --mode voxel   # voxel collision = recommended default (about 2 min, section 6)
@@ -155,7 +155,199 @@ python scripts/build_collision.py --config configs/pond.json --mode voxel   # vo
   `--min-h 0.4` only points above this height become 3D structure.
 - Green in `map.png` = drivable. Buildings, trees and parked cars are detected as obstacles.
 
-## 3. Compare texture using Blender
+## 2b. Correct the drivable area by hand (optional)
+
+Where a UGV may drive is decided automatically: the semantic grid (ground / obstacle / roof / no data), a slope limit, and the
+robot's footprint. That is right for buildings, trees and steep ground, but it can cut an area off behind one narrow passage
+(a few stray obstacle or slope cells), keep objects that were only there on the survey day, and it knows nothing about where
+an experiment should not go. `edit_drivable.py` lays hand-drawn polygons over the automatic result.
+
+```bash
+conda activate umasstwin
+python scripts/edit_drivable.py --config configs/pond.json
+```
+
+| Input | Action |
+|---|---|
+| `A` / `B` | start an **allow** polygon (cells inside become drivable) / a **block** polygon (cells inside are forbidden) |
+| left click | add a corner; right click / `Backspace` removes the last one |
+| `Enter` | finish the polygon: it is saved at once and the colours are recomputed |
+| `D`, then click inside a polygon | delete that polygon |
+| `Esc` / `Q` | drop the polygon being drawn / quit |
+
+- Colours: red = not drivable, orange = drivable but cut off from the largest connected area. The title shows both areas in hectares,
+  so a successful connection is visible as the largest area growing and the orange disappearing.
+- The edits are stored in `assets/twin/<name>/drivable_edits.json` (polygons in local metres, applied in order). The automatic
+  grids are never modified: delete the file (or `--clear`) to go back, and a rebuilt twin keeps the edits.
+- They are used wherever a UGV route is planned (`run_fleet.py` including its waypoint window, `run_nav.py`, `run_team.py`).
+  UAVs ignore them.
+- **Allow only changes where routes may go, not the collision ground.** Obstacle cells are raised by up to 0.6 m in the ground
+  mesh and 3D structures keep their collision, so a route through an allowed area can still hit something real. The window
+  (and `--allow`) warns when a polygon covers raised cells. Flattening the ground there is not implemented.
+- Block is complete on its own: routes never enter a blocked polygon.
+- The preview uses the Warthog footprint (`--robot`, `--max-slope` change it); the planner always uses each robot's own.
+- Without a display: `--allow X0 Y0 X1 Y1 X2 Y2 ...`, `--block ...`, `--list`, `--clear`.
+
+**Checked on the pond twin.** The parking lot in the south-west (1.7 ha) is drivable but not connected to the main area for a
+Warthog: the two meet in an alley between buildings at about (139, 268), 1.5 m apart. An allow rectangle over that alley
+(136–143, 264–273) raised the largest connected area from 12.77 to 14.46 ha, and a route from the lawn to the parking lot
+(638 m) was planned; without the edit the same route is refused. That rectangle covers 9 m² of raised cells, so the drive
+itself was not tested and may bump there. Only the command-line form and simulated clicks were tested, not the real window.
+
+
+## 3. Prepare the robots (once)
+
+Every navigation script uses the same two robots by default: the UGV is a **Clearpath Warthog**, the UAV is a
+**ModalAI Starling 2 Max**. Their models are not stored in this repo; one script downloads and converts them.
+
+```bash
+conda activate umasstwin
+python scripts/prepare_robots.py              # Warthog (also Jackal, Husky) -> assets/robots/<name>/ + robots.json
+python scripts/prepare_robots.py --starling   # Starling 2 Max meshes -> assets/robots/starling/meshes/
+```
+
+| Robot | Where the model comes from | What the script does |
+|---|---|---|
+| Warthog (UGV) | official [`warthog_description`](https://github.com/warthog-cpr/warthog) (BSD, branch `kinetic-devel`), cloned into `third_party/` | expands the xacro to a plain URDF, converts the meshes for Isaac Gym, drops the fender / light collision meshes, and writes the wheel names, track (1.14 m) and wheel radius (0.3 m) to `assets/robots/robots.json` |
+| Starling 2 Max (UAV) | ModalAI publishes no URDF. Mass (566 g), motor layout (260 × 190 mm) and prop size come from the [datasheet](https://docs.modalai.com/starling-2-max-datasheet/); body / propeller meshes and inertia from the community model [AIRLAB_Starling2Max](https://github.com/BjarkeHJ/AIRLAB_Starling2Max) | clones that repo into `third_party/` and writes the two meshes as OBJ in metres. The URDF itself is generated at run time by `umass_lidar/uav.py` (`STARLING` parameters) |
+
+- Both `third_party/` and the generated `assets/robots/` folders are gitignored, so run this once on every machine.
+- The Starling source repo has no licence file, which is why its meshes are fetched locally instead of being committed.
+  Without them the Starling falls back to a box-and-disc body with the same dynamics.
+- Model details, estimated parameters and known limits are in section 5d.
+
+## 4. Run navigation 
+
+### teleoperation (single UAV or single UGV)
+`scripts/run_teleop.py` puts one robot in a twin and lets you drive or fly it with the keyboard. Select the robot type with
+`--platform ugv` (Warthog) or `--platform uav` (Starling 2 Max). The views are the same as in `run_fleet.py`
+(third-person follow, fixed top view, free camera, trajectory line).
+
+```bash
+conda activate umasstwin
+# drive a Warthog: click the start on the map, press Enter, then the sim opens
+python scripts/run_teleop.py --config configs/pond.json --platform ugv --collision voxel
+# fly a Starling from a given start (local metres), no map window
+python scripts/run_teleop.py --config configs/pond.json --platform uav --start 340 450 --collision voxel
+```
+
+**Start.** Without `--start X Y` a window shows the twin's top view: click where the robot starts and press `Enter`
+(for a UGV, red = not drivable; a click there is moved to the nearest drivable ground within 20 m). `--yaw DEG` sets the
+heading (0 = east, 90 = north).
+
+**Teleop keys.** Click the Isaac Gym window once so it has the keyboard focus.
+
+| Key | UGV | UAV |
+|---|---|---|
+| `I` / `K` | forward / back | forward / back along its heading |
+| `J` / `L` | turn left / right | yaw left / right |
+| `U` / `O` | - | strafe left / right |
+| `Y` / `H` | - | climb / descend |
+| `=` / `-` | speed ×1.25 / ×0.8 | same |
+
+- With no key held the UGV stops and the UAV holds its position. The UAV takes off to `--agl` (3 m) by itself at the start.
+- Top speed is `--speed` (default 3 m/s), turn rate `--turn` (1.2 rad/s), UAV vertical speed `--climb` (2 m/s).
+- There is no obstacle avoidance or geofence: the robot collides with whatever `--collision {mesh,voxel,none}` provides (section 6).
+
+**View keys.** `1` follow the robot (default at start; `--view top` / `--view free` change it), `M` fixed top view of the whole
+map, `0` free camera, `N` trajectory on / off, `←` `→` orbit, `↑` `↓` zoom, `P` pause. Close the window or press Ctrl-C to stop.
+
+**Output** (`--out`, default `outputs/teleop/<twin>_<platform>_<time>/`): `trajectory.csv` (30 Hz pose, UTM and the key
+command), `trajectory.png` (the path on the map), `result.json` (distance, duration, start).
+
+**Verification (pond twin, voxel collision).** With the key input replaced by a constant command for 25 s: the Starling took off,
+flew 69 m on a climbing curve (z 6 → 22 m); the Warthog drove 75 m on a curve. The follow view and trajectory line were checked on
+a screenshot. Real key presses and the start-selection window were not tested (the window shares its code with `run_fleet.py`).
+
+### manual waypoint navigation (single ~ multi UAV-UGV)
+`scripts/run_fleet.py` is the main experiment script: any number of UGVs and UAVs in one twin, each with its own
+waypoints, watched live with every robot's trajectory drawn in its own colour.
+
+```bash
+conda activate umasstwin
+# 2 Warthogs + 1 Starling in the pond twin: pick the waypoints on the map, then the sim opens
+python scripts/run_fleet.py --config configs/pond.json --ugv 2 --uav 1 --speed 3 --collision voxel
+```
+
+**Settings.** `--ugv N` and `--uav N` set how many of each (default 1 and 1; 0 is allowed). The robots are named
+`ugv1, ugv2, ..., uav1, ...`. The models are always Warthog and Starling unless `--ugv-model` / `--uav-model` say otherwise.
+
+**Modes (`--mode`).**
+
+| Mode | What happens |
+|---|---|
+| `waypoint_select` (default) | A window shows the twin's top view. Click the waypoints of each robot in turn, then the Isaac Gym sim starts with those routes. |
+| `file` | Skips the window and reads the routes from `--routes routes.json`. Every run writes its `routes.json` into the output folder, so any run can be repeated. |
+| `algorithm` | **Future work.** Reserved for the experiment algorithm that will drive the robots instead of fixed waypoints. It currently stops with a message. The interface kept for it is `AlgorithmPolicy` in `run_fleet.py`: `reset(world, robots)` and `step(t, robots) -> {name: command}` with a UGV command `(v, w)` and a UAV command `(velocity xyz, yaw)`; the waypoint follower is the same kind of object (`WaypointPolicy`). |
+
+**Waypoint window.**
+
+| Input | Action |
+|---|---|
+| left click | add a waypoint for the current robot (the first click is its start) |
+| right click / `Backspace` | remove the last waypoint |
+| `R` | clear the current robot's waypoints |
+| `Enter` / `Space` / the green button | plan this robot's route and move on to the next robot; after the last robot the sim starts |
+| `Q` or closing the window | cancel |
+
+- The title line names the robot being edited. `Undo` and `Clear` are also buttons under the map.
+- **Red = not drivable** for the UGV being edited (obstacles, roofs, slopes over `--max-slope`, no data, and a margin of half
+  the robot width + 0.35 m around all of those). **Orange** appears once the start is placed: drivable ground that has no
+  connection to that start wide enough for the robot. Neither can be used as a waypoint. To change what is red or orange,
+  see section 2b.
+- A UGV route is an A* ground path through the clicked points (points on blocked ground snap to the nearest drivable cell, up to 20 m).
+  A click in the red / orange within 20 m of reachable ground is accepted and snapped. If a waypoint cannot be reached, a red message
+  on the map says which one, the window stays on that robot, and the route stays editable.
+- A UAV takes off at its first point and flies straight legs at `max(ground + --agl (5 m), structure top + --clearance (2 m))`,
+  then hovers at the last point.
+- The toolbar's zoom / pan tools work; clicks are ignored while one of them is active.
+
+**Viewer keys.**
+
+| Key | Action |
+|---|---|
+| `1` … `9` (top row or numpad) | follow that robot in third person, in the order `ugv1, ugv2, ..., uav1, ...` |
+| `M` | fixed top view of the whole map, north up (the default at start; `--view ugv1` etc. changes it) |
+| `0` | free camera (normal Isaac Gym mouse / WASD control) |
+| `N` | trajectories on / off |
+| `←` `→` / `↑` `↓` | orbit by 15° / zoom |
+| `T` | manual drive of the followed UGV on / off (`I` `K` forward / back, `J` `L` turn) |
+| `P` | pause |
+
+- Each robot's travelled path is drawn as a line in its own colour in every view. In the top view the lines are drawn above
+  the buildings and trees, so they are never hidden, and a ring marks each robot's current position.
+- `--hold` keeps the window open after every robot has finished. `--headless` runs without a window.
+
+**Output** (`--out`, default `outputs/fleet/<twin>_<time>/`):
+
+| File | Content |
+|---|---|
+| `routes.json` | robots and their waypoints (local metres); replay with `--mode file --routes` |
+| `plan.png` | planned routes on the map |
+| `trajectories.png` | travelled paths on the map, one colour per robot |
+| `trajectory_<robot>.csv` | per frame (30 Hz): pose, yaw, UTM, target waypoint |
+| `result.json` | per robot: status (`reached` / `timeout` / `stuck` / `flipped` / `crashed`), distance, waypoint times, goal error |
+| `topview.mp4` | only with `--record`: fixed top view of the whole map with the trajectories |
+| `<robot>_rgb.mp4`, `<robot>_depth.mp4` | only with `--record-ego`: D455-like camera on every robot (slow) |
+
+- Other options: `--speed` (UGV, default 1 m/s; the Warthog runs here used 3), `--uav-speed` (default 3 m/s), `--agl`, `--clearance`,
+  `--collision {mesh,voxel,none}` (section 6), `--max-seconds` (default 900), `--plan-only` (stop after `plan.png`).
+- Robots collide with each other. Routes are planned per robot with no coordination, so crossing routes can bump.
+- Loading the pond twin takes 1–2 minutes and about 33 GB of RAM before the window responds.
+
+**Verification (pond twin, voxel collision, `--speed 3 --uav-speed 5`).**
+- Headless, 2 Warthogs + 2 Starlings, 150 s limit, `--record`: both Starlings reached every waypoint (492 m and 390 m,
+  goal error ≤ 0.01 m). Neither Warthog finished in 150 s (146 of 190 m and 210 of 339 m). That run used a 0.8 m pure-pursuit
+  lookahead, which made the Warthogs weave; the lookahead now grows with speed (2.4 m at 3 m/s).
+- With the viewer, 1 Warthog + 1 Starling, 45 s: the Warthog reached its first waypoint (95 m) at 38 s instead of 139 s with the
+  longer lookahead. Top view, follow view and trajectory lines were checked on screenshots. A full mission with the new
+  lookahead has not been run, and neither have the keys, the waypoint window on a real display (only simulated clicks) and robot-robot contact.
+- With the viewer the pond twin runs at roughly 0.4× real time.
+
+The scripts below are the earlier single-purpose experiments. They still work and record more camera views.
+
+
+## 5. Compare texture using Blender
 
 ```bash
 # Without a driving log: place the D455 at LIMO camera height at map coordinates (x y yaw°). yaw 0 = east, 90 = north
@@ -177,10 +369,12 @@ blender --python scripts/blender_twin.py -- --twin assets/twin/library/full --ru
 - When mesh / resolution options change, bake a small area with `--region` and render `--twin assets/twin/library/crop` with the same `--at` to compare.
 - Full description and parameter table: [docs/blender_tuning.md](docs/blender_tuning.md)
 
-## 4. Run navigation
+--- below is modyfying.
+
+## 5a. Single UGV (`run_nav.py`)
 
 ```bash
-conda activate gleam && export LD_LIBRARY_PATH=$CONDA_PREFIX/lib:$LD_LIBRARY_PATH
+conda activate umasstwin
 # structure collision: voxel (recommended default, collision with holes filled, structure_collision_voxel.npz)
 python scripts/run_nav.py --config configs/library.json --waypoints 150 140 190 130 215 100 240 60 \
     --out outputs/nav/library_000 --headless --collision voxel
@@ -196,10 +390,10 @@ python scripts/run_nav.py --config configs/library.json --waypoints 150 140 190 
 
 - Waypoints are local m read from `assets/twin/library/map.png` (the first point is the start). `--plan-only` lets you check the path first.
 
-## 5. Run UAV (quadrotor)
+## 5b. Single UAV (`run_uav.py`)
 
 ```bash
-conda activate gleam && export LD_LIBRARY_PATH=$CONDA_PREFIX/lib:$LD_LIBRARY_PATH
+conda activate umasstwin
 # structure collision: voxel (recommended default)
 python scripts/run_uav.py --waypoints 95 150  103 166  125 172  138 168 \
     --out outputs/uav/run_000 --headless --collision voxel    # same for other twins, e.g. --config configs/library.json
@@ -217,7 +411,7 @@ python scripts/run_uav.py --waypoints 104 171 130 171 --agl 1.5 --clearance -100
   (actual collisions only when the `structure_collision.npz` of section 6 exists).
 - Camera: the same RGB-D as the D455, mounted under the nose, `--cam-pitch-deg` (default 30° down), `--depth-max` (default 20 m).
 - Output is the same as `run_nav.py` (`combined.mp4`, `d455_rgb/depth.mp4`, `depth/*.png` uint16 mm, `trajectory.csv` with rotor thrust and AGL added, `result.json`).
-- Vehicle model (`umass_lidar/uav.py`): `--uav starling` (default, section 5c) or `--uav quad`, a 1 kg X-quad with 4 rotors of at most 6 N each
+- Vehicle model (`umass_lidar/uav.py`): `--uav starling` (default, section 5d) or `--uav quad`, a 1 kg X-quad with 4 rotors of at most 6 N each
   (thrust/weight about 2.4). Both use a first-order motor lag of 30 ms and linear drag.
   Isaac Gym has no rotor model, so every step the summed force and torque of the 4 rotor thrusts are applied directly to the body.
   There are three levels of input usable as an RL action: `Quadrotor.apply_motors(f)` (rotor thrusts),
@@ -226,10 +420,10 @@ python scripts/run_uav.py --waypoints 104 171 130 171 --agl 1.5 --clearance -100
 **Verification (`outputs/uav/run_000`, blue_wall, `--uav quad`)**: all 3 waypoints reached (takeoff 4.1 s, 12.0 / 22.0 / 28.6 s), planned 60.8 m / flown 60.7 m,
 goal error 0.11 m, maximum path deviation 0.29 m, 857 frames, 77% valid depth pixels.
 
-## 5b. Run UGV + UAV together
+## 5c. One UGV + one UAV on the same path (`run_team.py`)
 
 ```bash
-conda activate gleam && export LD_LIBRARY_PATH=$CONDA_PREFIX/lib:$LD_LIBRARY_PATH
+conda activate umasstwin
 python scripts/run_team.py --config configs/library.json --waypoints 150 140 190 130 215 100 240 60 \
     --out outputs/team/library_voxel --headless --collision voxel     # or --collision mesh / none
 python scripts/run_team.py --waypoints 95 150  103 166  125 172  138 168 \
@@ -244,7 +438,7 @@ python scripts/run_team.py --config configs/blue_wall_aerial.json --waypoints 95
 - Output: `combined.mp4` (map seen from above + third person + D455 RGB/depth of both robots), `topview.mp4`, `chase.mp4`,
   `ugv_rgb/depth.mp4`, `uav_rgb/depth.mp4`, `depth_ugv/`, `depth_uav/`, `trajectory_ugv.csv`, `trajectory_uav.csv`, `result.json`.
 
-## 5c. Robots, defaults and the live viewer
+## 5d. Robot details and the live viewer
 
 The default UGV is the **Clearpath Warthog** and the default UAV is the **ModalAI Starling 2 Max**
 (`--robot warthog`, `--uav starling`). The older results in this README (LIMO, 1 kg generic quad) were produced
@@ -258,7 +452,7 @@ with `--robot limo --uav quad`; pass those to reproduce them.
 | Generic quad | `--uav quad` | parametric box-and-disc model | 1 kg, 6 N per rotor |
 
 ```bash
-conda activate umasslidar
+conda activate umasstwin
 python scripts/prepare_robots.py              # Warthog, Jackal, Husky (+ LIMO with --limo-desc)
 python scripts/prepare_robots.py --starling   # Starling 2 Max meshes -> assets/robots/starling/meshes/
 ```
@@ -281,7 +475,7 @@ Clicking an actor in the Isaac Gym side panel cannot be read from Python, so the
 | `P` | pause |
 
 ```bash
-source ~/anaconda3/etc/profile.d/conda.sh && conda activate gleam && export LD_LIBRARY_PATH=$CONDA_PREFIX/lib:$LD_LIBRARY_PATH
+conda activate umasstwin
 # Warthog + Starling in the pond twin, live, following the Warthog
 python scripts/run_team.py --config configs/pond.json --waypoints 160 300 185 400 140 460 135 330 \
     --speed 3 --collision voxel --no-record --out outputs/team/pond_live
@@ -301,7 +495,7 @@ The Warthog + mesh-model Starling combination and the viewer keys have only been
 ## 6. Structure collision (mesh collision for buildings / trees / cars)
 
 ```bash
-conda activate umasslidar
+conda activate umasstwin
 # two lines per twin: mesh mode (a few seconds) → voxel mode (1–2 min). At run time use --collision voxel (recommended default)
 python scripts/build_collision.py                                              # blue_wall
 python scripts/build_collision.py --mode voxel
@@ -336,7 +530,7 @@ python scripts/build_collision.py --config configs/library.json --variant crop  
 ### Voxel collision (`--mode voxel`): collision without holes
 
 ```bash
-conda activate umasslidar
+conda activate umasstwin
 python scripts/build_collision.py --config configs/library.json                 # mesh mode first (the reference for hiding voxel faces)
 python scripts/build_collision.py --config configs/library.json --mode voxel    # → <variant>/structure_collision_voxel.npz
 # usage: run_nav.py / run_uav.py --collision voxel
@@ -385,7 +579,7 @@ Takes one session collected on foot with a RESEPI payload as input, builds a pho
 drives one LIMO through waypoints in Isaac Gym while recording three views: **top view / third person / RealSense D455 RGB-D**.
 
 ```
-RESEPI session                         build_twin.py (env: umasslidar)                run_nav.py (env: gleam)
+RESEPI session                         build_twin.py                                  run_nav.py            (env: umasstwin)
 ┌───────────────────────┐   prep    ┌──────────────────────────────────────┐      ┌─────────────────────────┐
 │ LAS  (LiDAR, 443 M pt)│──────────▶│ LAS↔trajectory shift, tile/voxel cache│      │ Isaac Gym               │
 │ camera/*.jpg (795)    │   calib   │ camera f / boresight / per-photo pose │      │  collision: 2.5D ground │
@@ -399,7 +593,7 @@ RESEPI session                         build_twin.py (env: umasslidar)          
 
 ```bash
 # 0) (first time only) prepare robot URDFs
-conda activate umasslidar
+conda activate umasstwin
 python scripts/prepare_robots.py
 
 # 1) Digital twin build — processing env. Cached per stage, so a rerun only does the missing stages.
@@ -410,8 +604,7 @@ python scripts/build_collision.py                  # structure mesh collision (8
 python scripts/build_collision.py --mode voxel     # structure voxel collision (47 s, recommended default. Section 6)
 
 # 2) Navigation — Isaac Gym env
-conda activate gleam
-export LD_LIBRARY_PATH=$CONDA_PREFIX/lib:$LD_LIBRARY_PATH
+conda activate umasstwin
 python scripts/run_nav.py --waypoints 95 150  103 166  125 172  138 168 \
     --out outputs/nav/run_000 --headless --collision voxel                  # voxel collision (recommended default)
 python scripts/run_nav.py --waypoints 95 150  103 166  125 172  138 168 \
@@ -423,7 +616,7 @@ python scripts/run_nav.py --waypoints 95 150  103 166  125 172  138 168 \
   to a nearby cell with 1 m of margin (the moved distance is printed).
 - `--plan-only`: only makes `plan.png`, without the sim. Without `--headless` a viewer window opens.
 - `--collision {mesh,voxel,none}`: 3D structure collision shape (section 6). `none` leaves only the visual (this is also the state when the corresponding npz file is missing).
-- `--robot {warthog,limo,jackal,husky}` (default `warthog`, section 5c), `--speed`, `--cam-pitch-deg` (D455 downward angle), `--variant crop`.
+- `--robot {warthog,limo,jackal,husky}` (default `warthog`, section 5d), `--speed`, `--cam-pitch-deg` (D455 downward angle), `--variant crop`.
 - To use another session, create `configs/<name>.json` and pass it with `--config` (`session_dir`, `las`, `bbox_utm`, `origin`).
 
 `run_nav.py` output (`--out` folder):
@@ -648,7 +841,7 @@ Early code for data seen only from above, such as `~/Desktop/Airborne.las` (20 G
 Separate from the twin pipeline.
 
 ```bash
-conda activate umasslidar
+conda activate umasstwin
 # 1) full overview (1 m/px, with UTM grid) → read the UTM coordinates of the area of interest
 python scripts/las_overview.py --las ~/Desktop/Airborne.las --out data/overview --res 1.0
 python scripts/las_overview.py --las ~/Desktop/Airborne.las --out data/overview --mark 703437 4696145 176
@@ -665,21 +858,40 @@ python scripts/crop_las.py --las ~/Desktop/Airborne.las --center 703437 4696145 
 
 # Environments
 
-| Purpose | conda env | Notes |
-|---|---|---|
-| Data processing (`build_twin.py`, `eval_vo.py`, `prepare_robots.py`, auxiliary tools) | `umasslidar` (miniforge, py3.10) | `pip install "laspy[lazrs]" open3d trimesh pillow scipy opencv-python-headless xatlas pycolmap matplotlib xacro pycollada fast-simplification` |
-| Simulation (`run_nav.py`, `run_uav.py`, `run_team.py`) | `gleam` (anaconda3, py3.8, Isaac Gym Preview 4) | before running: `export LD_LIBRARY_PATH=$CONDA_PREFIX/lib:$LD_LIBRARY_PATH` |
-
-The two envs live in **different conda installs** on this machine, and a shell only sees the envs of the install whose
-`conda.sh` it sourced last (`conda activate umasslidar` → `EnvironmentNameNotFound` after sourcing anaconda3, and the
-other way round). Source the right one first:
+One conda env, `umasstwin` (Python 3.8), runs everything: data processing and the Isaac Gym simulation.
+It is described by [environment.yml](environment.yml).
 
 ```bash
-# data processing (select_region.py, las_overview.py, build_twin*.py, build_collision.py, prepare_robots.py)
-source ~/miniforge3/etc/profile.d/conda.sh && conda activate umasslidar
-# simulation (run_nav.py, run_uav.py, run_team.py, demo.py)
-source ~/anaconda3/etc/profile.d/conda.sh && conda activate gleam && export LD_LIBRARY_PATH=$CONDA_PREFIX/lib:$LD_LIBRARY_PATH
+conda env create -f environment.yml
+conda activate umasstwin
+# Isaac Gym Preview 4 is an NVIDIA download (https://developer.nvidia.com/isaac-gym), not on PyPI
+pip install --no-deps -e ~/Downloads/isaacgym/python
+# Isaac Gym needs the env's libpython on the library path; store that in the env once
+conda env config vars set LD_LIBRARY_PATH=$CONDA_PREFIX/lib && conda activate umasstwin
 ```
+
+- Python is 3.8 because Isaac Gym Preview 4 supports nothing newer. That pins numpy to 1.23 and a few packages
+  (`lazrs`, `pycollada`, `tifffile`) to their last Python 3.8 releases; the versions are fixed in `environment.yml`.
+- `--no-deps` skips PyTorch, which Isaac Gym lists as a requirement but this repo never imports (no `gymtorch`).
+- After the `config vars` line, `conda activate umasstwin` is all a new shell needs; no `export LD_LIBRARY_PATH` any more.
+- Needs Linux and an NVIDIA GPU. Blender (`scripts/blender_twin.py`) is a separate install and runs with its own Python.
+
+**Checked in `umasstwin`** on a 120 m test site: `select_region.py` → `build_twin_site.py` (ortho ground) → `build_collision.py`
+(mesh and voxel) → `prepare_robots.py` (with `--starling`) → `run_fleet.py` (headless, Warthog + Starling, both reached their goals).
+**Not re-run there**: `build_twin.py` / `build_twin_aerial.py` (the RESEPI and Metashape pipelines) and `eval_vo.py`, which
+were developed in the older envs below; `eval_vo.py` was written against pycolmap 4.2 and the Python 3.8 wheel is 3.12.
+
+<details><summary>Older two-env setup (still works on the original machine)</summary>
+
+| Purpose | conda env |
+|---|---|
+| Data processing | `umasslidar` (miniforge, py3.10): `source ~/miniforge3/etc/profile.d/conda.sh && conda activate umasslidar` |
+| Simulation | `gleam` (anaconda3, py3.8): `source ~/anaconda3/etc/profile.d/conda.sh && conda activate gleam && export LD_LIBRARY_PATH=$CONDA_PREFIX/lib:$LD_LIBRARY_PATH` |
+
+The two envs live in different conda installs, and a shell only sees the envs of the install whose `conda.sh` it sourced
+last, which is what `EnvironmentNameNotFound` means.
+
+</details>
 
 Robot URDFs are built by `scripts/prepare_robots.py` without ROS (Warthog, Jackal and Husky clone the Clearpath repos,
 LIMO uses `~/Documents/limo/agilex_open_class/limo/limo_description`). After xacro → URDF and DAE → OBJ conversion it
@@ -691,6 +903,9 @@ attaches `d455_link` and records wheel radius, track and camera link in `assets/
 configs/blue_wall.json      session config (session_dir, las, bbox_utm, origin)
 scripts/
   build_twin.py             session → digital twin (prep / calib / ground / bake / export)
+  edit_drivable.py          hand-drawn allow / block polygons over the automatic drivable area
+  run_teleop.py             keyboard teleoperation of one UGV or one UAV (Isaac Gym)
+  run_fleet.py              main experiment: N UGVs + M UAVs, waypoint picking on the map, live trajectories (Isaac Gym)
   run_nav.py                UGV waypoint navigation + three-view recording (Isaac Gym)
   run_uav.py                UAV (Starling / quad) waypoint flight + RGB-D recording (Isaac Gym)
   run_team.py               UGV + UAV running together (same A* path) + RGB-D recording of both robots (Isaac Gym)
@@ -710,6 +925,7 @@ umass_lidar/
   texture.py                photo projection, intensity model, material table, GLB export
   metashape.py              Metashape chunk loader (pose, depth map → cloud, aerial photo bank)
   nav.py                    traversability, A*, pure pursuit
+  waypoint_ui.py            waypoint picking window on the top-view map (used by run_fleet.py)
   uav.py                    quadrotor URDF, rotor dynamics, geometric controller, 3D flight path
   sim.py, sim_assets.py     Isaac Gym helpers (twin loading, lighting, robot, camera)
   viz.py, mesh.py, io.py    map drawing, 2.5D mesh, I/O for the auxiliary tools

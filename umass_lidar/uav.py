@@ -185,7 +185,7 @@ class QuadController:
 class Quadrotor:
     """Isaac Gym actor + rotor dynamics. Call apply_motors() before every gym.simulate()."""
 
-    def __init__(self, gym, sim, env, xyz, yaw, dt, p=STARLING):
+    def __init__(self, gym, sim, env, xyz, yaw, dt, p=STARLING, actor_name=None, collision_filter=1):
         from isaacgym import gymapi
         self.gymapi, self.gym, self.env, self.p, self.dt = gymapi, gym, env, p, dt
         self.cfg = dict(camera_link=p["camera_link"], camera_xyz=list(p["camera_xyz"]))
@@ -199,7 +199,7 @@ class Quadrotor:
         t = gymapi.Transform()
         t.p = gymapi.Vec3(*xyz)
         t.r = gymapi.Quat.from_axis_angle(gymapi.Vec3(0, 0, 1), yaw)
-        self.actor = gym.create_actor(env, asset, t, p.get("name", "quad"), 0, 1)
+        self.actor = gym.create_actor(env, asset, t, actor_name or p.get("name", "quad"), 0, collision_filter)
         self.mass = sum(b.mass for b in gym.get_actor_rigid_body_properties(env, self.actor))
         self.body = gym.find_actor_rigid_body_handle(env, self.actor, "base_link")
         self.base = gym.find_actor_rigid_body_index(env, self.actor, "base_link", gymapi.DOMAIN_ACTOR)

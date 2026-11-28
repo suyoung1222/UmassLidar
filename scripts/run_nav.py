@@ -2,8 +2,7 @@
 recorded from three viewpoints: top-down, third-person chase, and a RealSense D455-like RGB-D
 camera on the robot.
 
-    conda activate gleam
-    export LD_LIBRARY_PATH=$CONDA_PREFIX/lib:$LD_LIBRARY_PATH
+    conda activate umasstwin
     python scripts/run_nav.py --waypoints 96 185  110 150  102 62 --out outputs/nav/run_000 --headless
 
 Waypoints are local metres (read them off assets/twin/<name>/map.png; --utm for UTM E N).
@@ -37,8 +36,9 @@ from umass_lidar.viz import depth_vis, label, write_terrain_map  # noqa: E402
 FPS = 30
 
 
-def plan(h, res, sem, pts, rcfg, max_slope, rng, min_len=40.0):
-    trav = dict(max_slope_deg=max_slope, robot_radius=rcfg["track"] * 0.5 + 0.35, blocked=sem != 0)
+def plan(h, res, sem, pts, rcfg, max_slope, rng, min_len=40.0, edits=None):
+    """edits: manual drivable-area corrections (nav.load_drivable_edits)."""
+    trav = dict(max_slope_deg=max_slope, robot_radius=rcfg["track"] * 0.5 + 0.35, blocked=sem != 0, edits=edits)
     if pts is None:
         path = nav.sample_route(h, res, rng, min_len=min_len, **trav)
         return path, [tuple(path[0]), tuple(path[-1])], [len(path) - 1]
@@ -99,7 +99,8 @@ def main():
         if a.utm:
             pts = [(p[0] - origin[0], p[1] - origin[1]) for p in pts]
     try:
-        path, wps, ends = plan(h, res, sem, pts, rcfg, a.max_slope, np.random.default_rng(a.seed))
+        path, wps, ends = plan(h, res, sem, pts, rcfg, a.max_slope, np.random.default_rng(a.seed),
+                               edits=nav.load_drivable_edits(twin.parent))
     except ValueError as e:
         write_terrain_map(gprefix, points={f"wp{i}": p for i, p in enumerate(pts or [])}, out=out / "plan.png",
                           image=twin.parent / "map_base.png")

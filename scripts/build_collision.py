@@ -8,7 +8,7 @@ one simplified triangle mesh that sim.add_twin() adds as static collision next t
     surface normal (Isaac Gym renders collision meshes flat grey; the inset keeps them behind
     the textured visual surface)
 
-    conda activate umasslidar
+    conda activate umasstwin
     python scripts/build_collision.py                               # configs/blue_wall.json, variant full
     python scripts/build_collision.py --config configs/library.json
 

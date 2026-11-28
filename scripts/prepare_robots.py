@@ -124,7 +124,8 @@ def convert(name: str, cfg: dict, pkg_dir: Path):
         ET.SubElement(j, "child", link="d455_link")
         ET.SubElement(j, "origin", xyz=" ".join(map(str, cfg["cam_xyz"])), rpy="0 0 0")
 
-        ET.indent(root)
+        if hasattr(ET, "indent"):          # Python >= 3.9; only pretty-printing
+            ET.indent(root)
         (out / f"{name}.urdf").write_text(ET.tostring(root, encoding="unicode"))
 
     wheels = [j.get("name") for j in root.findall("joint")

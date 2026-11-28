@@ -2,8 +2,7 @@
 along the same A* ground path. The quad flies above that path at
     z = max(ground + --agl, structure top + --clearance)   (smoothed along the path).
 
-    conda activate gleam
-    export LD_LIBRARY_PATH=$CONDA_PREFIX/lib:$LD_LIBRARY_PATH
+    conda activate umasstwin
     python scripts/run_team.py --config configs/library.json --waypoints 150 140 190 130 215 100 240 60 \
         --out outputs/team/library_000 --headless
 
@@ -102,7 +101,8 @@ def main():
     if a.utm:
         pts = [(p[0] - origin[0], p[1] - origin[1]) for p in pts]
     try:
-        path, wps, ends = plan(h, res, sem, pts, rcfg, a.max_slope, np.random.default_rng(0))   # A* per leg
+        path, wps, ends = plan(h, res, sem, pts, rcfg, a.max_slope, np.random.default_rng(0),    # A* per leg
+                               edits=nav.load_drivable_edits(twin.parent))
     except ValueError as e:
         sys.exit(f"[plan] {e}")
     yaw0 = float(np.arctan2(*(path[min(5, len(path) - 1)] - path[0])[::-1]))

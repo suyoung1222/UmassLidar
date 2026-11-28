@@ -34,8 +34,7 @@ def main():
         import isaacgym  # noqa: F401
     except ImportError:
         sys.exit("[demo] Isaac Gym is not importable in this Python. Activate the Isaac Gym env first, e.g.\n"
-                 "  source ~/anaconda3/etc/profile.d/conda.sh && conda activate gleam && "
-                 "export LD_LIBRARY_PATH=$CONDA_PREFIX/lib:$LD_LIBRARY_PATH")
+                 "  conda activate umasstwin        (README, section Environments)")
     extra = [x for x in sys.argv[1:] if x != "--record"]
     has = lambda f: f in extra                                                  # noqa: E731
     args = ["--config", str(ROOT / "configs/pond.json"), "--waypoints", *WAYPOINTS, "--hold"]

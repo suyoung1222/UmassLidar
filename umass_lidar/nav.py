@@ -16,13 +16,37 @@ def slope_deg(h, res):
     return np.degrees(np.arctan(np.hypot(gx, gy)))
 
 
-def traversable_mask(h, res, max_slope_deg=15.0, robot_radius=0.4, margin_m=2.0, blocked=None):
+EDITS_FILE = "drivable_edits.json"
+
+
+def load_drivable_edits(twin_root):
+    """Manual corrections of the drivable area drawn with scripts/edit_drivable.py:
+    [dict(type="allow" | "block", polygon=[[x, y], ...])] in local metres, applied in order. [] if none."""
+    import json
+    from pathlib import Path
+    f = Path(twin_root) / EDITS_FILE
+    return json.loads(f.read_text()).get("edits", []) if f.exists() else []
+
+
+def polygon_mask(shape, res, polygon):
+    """Bool grid (row 0 = south) of the cells whose centre region a polygon in metres covers."""
+    import cv2
+    m = np.zeros(shape, np.uint8)
+    cv2.fillPoly(m, [np.round(np.asarray(polygon, float) / res).astype(np.int32)], 1)
+    return m.astype(bool)
+
+
+def traversable_mask(h, res, max_slope_deg=15.0, robot_radius=0.4, margin_m=2.0, blocked=None, edits=None):
     """Cells the robot footprint can occupy: every cell within robot_radius is below max slope
-    and not in `blocked` (e.g. unobserved cells of the semantic grid)."""
+    and not in `blocked` (e.g. unobserved cells of the semantic grid).
+    edits (load_drivable_edits) override both tests cell by cell before the footprint is applied:
+    "allow" polygons clear them, "block" polygons set them."""
     k = max(1, int(np.ceil(robot_radius / res)))
     bad = slope_deg(h, res) >= max_slope_deg
     if blocked is not None:
         bad |= blocked
+    for e in edits or []:
+        bad[polygon_mask(bad.shape, res, e["polygon"])] = e["type"] == "block"
     yy, xx = np.ogrid[-k:k + 1, -k:k + 1]
     ok = ~ndimage.binary_dilation(bad, structure=(xx * xx + yy * yy) <= k * k)
     m = int(margin_m / res)
@@ -161,7 +185,7 @@ def sample_route(h, res, rng, min_len=40.0, tries=30, **trav_kw):
     """Random start/goal pair in the largest ground region with a path of at least min_len."""
     mask = traversable_mask(h, res, **trav_kw)
     comp = largest_ground_component(mask, h, res)
-    flat = comp & traversable_mask(h, res, 5.0, 1.0, 5.0, blocked=trav_kw.get("blocked"))
+    flat = comp & traversable_mask(h, res, 5.0, 1.0, 5.0, blocked=trav_kw.get("blocked"), edits=trav_kw.get("edits"))
     ys, xs = np.nonzero(flat)
     best = None
     for _ in range(tries):

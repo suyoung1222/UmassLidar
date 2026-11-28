@@ -1,8 +1,7 @@
 """UAV experiment: quadrotor waypoint flight over the digital twin with a forward-down D455-like
 RGB-D camera, recorded like run_nav.py (top-down, chase, ego RGB / depth).
 
-    conda activate gleam
-    export LD_LIBRARY_PATH=$CONDA_PREFIX/lib:$LD_LIBRARY_PATH
+    conda activate umasstwin
     python scripts/run_uav.py --waypoints 95 150  103 166  125 172  138 168 --out outputs/uav/run_000 --headless
 
 Waypoints are local metres (x y, from assets/twin/<name>/map.png; --utm for UTM E N). The drone

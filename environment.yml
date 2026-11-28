@@ -1,0 +1,35 @@
+# One environment for the whole repo: data processing (twin building) and simulation (Isaac Gym).
+#
+#   conda env create -f environment.yml
+#   conda activate umasstwin
+#   pip install --no-deps -e /path/to/isaacgym/python       # Isaac Gym Preview 4 (NVIDIA download, not on PyPI)
+#   conda env config vars set LD_LIBRARY_PATH=$CONDA_PREFIX/lib && conda activate umasstwin
+#
+# Python is 3.8 because Isaac Gym Preview 4 supports nothing newer; that is also why numpy stays at 1.23
+# and why lazrs / pycollada are held at their last releases that still work on 3.8.
+name: umasstwin
+channels:
+  - conda-forge
+dependencies:
+  - python=3.8
+  - pip
+  - git
+  - pip:
+      - numpy==1.23.5
+      - scipy==1.10.1
+      - laspy==2.5.4
+      - lazrs==0.6.1             # LAZ backend; newer releases have no Python 3.8 wheel
+      - open3d==0.18.0
+      - opencv-python==4.9.0.80
+      - pillow==10.4.0
+      - tifffile==2023.7.10
+      - matplotlib==3.7.5
+      - imageio==2.35.1
+      - imageio-ffmpeg==0.5.1
+      - trimesh==4.12.2
+      - pycollada==0.8           # DAE robot meshes (prepare_robots.py); 0.9+ needs Python 3.9
+      - fast-simplification==0.1.7
+      - xatlas==0.0.11
+      - xacro==2.1.1
+      - pyyaml
+      - pycolmap==3.12.5         # only scripts/eval_vo.py
