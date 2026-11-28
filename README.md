@@ -29,8 +29,32 @@ log.txt                         collection summary: GNSS satellite count (21–2
 ```
 
 ## 2. Airborne.las EE2023
-Sensors: Inertial Labs RESEPI + Hesai 32ch LiDAR + DJI drone camera
-Data (https://drive.google.com/drive/u/1/folders/1kBTbf2Wi2AtV4I8o0_BCfMtxHIy65xED):
+All-campus UAS (drone) aerial survey, Spring 2023. Sensors: DJI drone cameras only (Mavic 2 Pro, Mavic 3 Enterprise),
+processed with Agisoft Metashape. **This is photogrammetry, not LiDAR**: `Airborne.las` is the dense point cloud
+Metashape computed from the photos (RGB + normals, no intensity, no classification).
+
+Two folders on Google Drive, both under `~/mydata/worldmodel/rss2027/EE2023/` on this machine, plus `~/Desktop/Airborne.las`.
+
+**(a) Final products** — `AllCampus_Spring2023_Edits_v3/` (https://drive.google.com/drive/folders/1doCya4EbVbIss1Bv_Kyq4bfK6yQioaXi)
+
+```bash
+Point Cloud/AllCampusUAS_PointCloud_Spring2023.las   20.5 GB, 707.5 M points, Metashape export (2023-12)
+    LAS 1.2 point format 2, UTM 18N metres, RGB + normals; extent 4.9 × 5.0 km, z −252 ... 404 m (outliers included)
+~/Desktop/Airborne.las                               20.5 GB, 705.9 M points, 4.0 × 3.8 km, about 92 pts/m²
+    the same cloud re-exported from QT Modeler (2025-07) with the outliers removed (z −3 ... 206 m). This is the
+    default input of select_region.py / las_overview.py and the source of every "site" twin (pond, library, ...)
+Ortho Tiles/*.tif                                    36 GB, 23 tiles (a16 ... e20), about 945 × 640 m each
+    3-band orthomosaic, 0.1008 ft (≈ 3 cm) per pixel, EPSG:2249 (NAD83 Massachusetts Mainland, US survey feet)
+    build_twin_site.py colours the ground from these automatically when the folder exists (umass_lidar/ortho.py)
+Orthomosaic/AllCampusUASOrtho_Spring2023.tif         105 GB, the same orthomosaic as one file (not used)
+Orthomosaic/Ortho with Pyramids/                     3 identical 51.7 GB copies of a lower-level export (not used)
+DEM/, DEM Tiles/                                     elevation raster, 0.403 ft (≈ 12 cm) per pixel, EPSG:2249 (not used)
+Tiling Footprint Masks/mask_<tile>.gpkg              tile outlines (tiles are buffered 50 ft beyond them)
+READ_ME.txt                                          product list and the two Drive links
+```
+
+**(b) Raw survey and Metashape projects** — `Aerial Images/`, `AlignedChunksViaPointClouds/`
+(https://drive.google.com/drive/folders/1kBTbf2Wi2AtV4I8o0_BCfMtxHIy65xED)
 
 ```bash
 Aerial Images/RegionXX/DJI_*.JPG   25 regions, 12,514 photos
@@ -46,11 +70,18 @@ AlignedChunksViaPointClouds/
     transects.shp, Set2_Chunks*.png (screenshots before/after GCP alignment)
 ```
 
+Which twin pipeline uses what:
+
+| Pipeline | Input | Result |
+|---|---|---|
+| `select_region.py` → `build_twin_site.py` (Quick guideline) | `Airborne.las` + (a) ortho tiles | any campus area up to 25 ha; ground from the 3 cm ortho, structures from point colours |
+| `build_twin_aerial.py` | (b) photos + Metashape poses of one chunk | photos projected on the mesh, including walls where oblique photos exist; only the processed regions (22–26, 29, 36_37_38_44) |
+
 # Demo
 A Clearpath Warthog and a ModalAI Starling 2 Max follow a fixed loop over the lawn next to the campus pond,
 live in the Isaac Gym viewer. The window stays open afterwards so you can look around or drive the Warthog yourself.
 
-Example files (not in git):
+Example files (https://drive.google.com/file/d/1IPwI7H2PyYNpbdXkeR2n2e6SCLDwieo6/view?usp=drive_link):
 - **Pond twin**: `pond_twin.tar.gz` (913 MB, 1.4 GB unpacked; download link: TODO). Unpack in the repo root with
   `tar xzf pond_twin.tar.gz` → `assets/twin/pond/` and `configs/pond.json`.
 - **Robots**: `python scripts/prepare_robots.py` (Warthog, processing env) and, optionally,
@@ -83,32 +114,43 @@ python scripts/demo.py
 conda activate umasslidar
 # (first time only) generate the full overview map
 python scripts/las_overview.py --las ~/Desktop/Airborne.las --out data/overview
-# draw a rectangle on the map and crop that area to a LAS
-python scripts/select_region.py --name library
+```
+```bash
+# draw a rectangle (or a polygon) on the map and crop that area to a LAS
+python scripts/select_region.py --name pond --polygon
 ```
 
 - Controls: left drag = rectangle (drag a corner to edit), scroll = zoom, right drag = pan, `Enter` = crop, `Esc` = cancel.
+- **Polygon instead of a rectangle** (e.g. a skewed quadrilateral): press `p` (or start with `--polygon`), click the corners one by one,
+  click the first corner again to close it, then drag any corner to adjust. `b` goes back to the rectangle, `Esc` clears the polygon,
+  `q` quits. Only the points inside the polygon are written; the twin is still built on the polygon's bounding box, and the part
+  outside the polygon becomes no-data (grey, not drivable).
 - The title line shows size / area / estimated point count. Past the limits it turns red and `Enter` is refused, so redraw.
-- Output: `data/sites/<name>.las` (same format and CRS as the source) + `<name>.json` (bbox, area, point count). About 30 s to scan the full 20 GB.
+- Output: `data/sites/<name>.las` (same format and CRS as the source) + `<name>.json` (bbox, polygon corners if any, area, point count). About 30 s to scan the full 20 GB.
 - Default limits: 500 m per side, 25 ha (estimated for an RTX 4090 24 GB). Change with `--max-side`, `--max-area`.
 - For another LAS use `--las` and `--overview`; output location is `--out`.
-- Without a display (remote), give coordinates directly: `python scripts/select_region.py --bbox XMIN YMIN XMAX YMAX --name b1`
+- Without a display (remote), give coordinates directly: `python scripts/select_region.py --bbox XMIN YMIN XMAX YMAX --name b1`,
+  or a polygon with `--poly X0 Y0 X1 Y1 X2 Y2 ...` (UTM, at least 3 corners).
 
 ## 2. Build twin from the region
 
 ```bash
 conda activate umasslidar
-python scripts/build_twin_site.py --las data/sites/library.las      # library 9.9 ha: a few minutes
-python scripts/build_collision.py --config configs/library.json                # mesh collision for buildings / trees / cars (tens of seconds, also the reference for voxel)
-python scripts/build_collision.py --config configs/library.json --mode voxel   # voxel collision = recommended default (about 2 min, section 6)
+python scripts/build_twin_site.py --las data/sites/pond.las      # library 9.9 ha: a few minutes
+python scripts/build_collision.py --config configs/pond.json                # mesh collision for buildings / trees / cars (tens of seconds, also the reference for voxel)
+python scripts/build_collision.py --config configs/pond.json --mode voxel   # voxel collision = recommended default (about 2 min, section 6)
 ```
 
-- The input is only point positions and colours (no photos or sensor trajectory needed). The first run creates `configs/library.json`, and every script uses this config afterwards.
+
+- The input is point positions and colours (no photos or sensor trajectory needed), plus the EE2023 orthomosaic tiles for the ground
+  when `~/mydata/worldmodel/rss2027/EE2023/AllCampus_Spring2023_Edits_v3/Ortho Tiles` exists: the ground is then textured at 3 cm from
+  the ortho wherever it is visible from above (parking lines, cracks and grass texture become readable), and from the points elsewhere.
+  `--ortho DIR` uses another folder, `--no-ortho` turns it off. The first run creates `configs/library.json`, and every script uses this config afterwards.
 - Output: `assets/twin/library/` (`ground.glb` collision mesh, `map.png` map for waypoints, `full/` tile GLB / PNG / `twin.json`); the cache is `data/library/`.
-- Per-stage cache: running again only does the export (about 10 s). To recompute, use `--redo ground|cloud|bake`.
+- Per-stage cache: running again only does the export (about 10 s). To recompute, use `--redo ground|cloud|ortho|bake`.
 - A quick partial build: `--region X0 Y0 X1 Y1` (local m, `map.png` coordinates) → saved separately as the `crop` variant.
 - Quality options (changing them needs `--redo bake`):
-  `--tex-res 0.05` ground texel (point spacing is about 0.1 m, so going lower does not make it sharper), `--smooth 0.07` point colour blur width,
+  `--tex-res` ground texel (default 0.03 with the ortho, 0.05 without: point spacing is about 0.1 m, so going lower does not make it sharper), `--smooth 0.07` point colour blur width,
   `--fill 0.6` width for filling empty ground (under trees etc.) with surrounding colour, `--voxel 0.12` structure mesh density (too small fragments, too large blurs),
   `--min-h 0.4` only points above this height become 3D structure.
 - Green in `map.png` = drivable. Buildings, trees and parked cars are detected as obstacles.
@@ -627,6 +669,17 @@ python scripts/crop_las.py --las ~/Desktop/Airborne.las --center 703437 4696145 
 |---|---|---|
 | Data processing (`build_twin.py`, `eval_vo.py`, `prepare_robots.py`, auxiliary tools) | `umasslidar` (miniforge, py3.10) | `pip install "laspy[lazrs]" open3d trimesh pillow scipy opencv-python-headless xatlas pycolmap matplotlib xacro pycollada fast-simplification` |
 | Simulation (`run_nav.py`, `run_uav.py`, `run_team.py`) | `gleam` (anaconda3, py3.8, Isaac Gym Preview 4) | before running: `export LD_LIBRARY_PATH=$CONDA_PREFIX/lib:$LD_LIBRARY_PATH` |
+
+The two envs live in **different conda installs** on this machine, and a shell only sees the envs of the install whose
+`conda.sh` it sourced last (`conda activate umasslidar` → `EnvironmentNameNotFound` after sourcing anaconda3, and the
+other way round). Source the right one first:
+
+```bash
+# data processing (select_region.py, las_overview.py, build_twin*.py, build_collision.py, prepare_robots.py)
+source ~/miniforge3/etc/profile.d/conda.sh && conda activate umasslidar
+# simulation (run_nav.py, run_uav.py, run_team.py, demo.py)
+source ~/anaconda3/etc/profile.d/conda.sh && conda activate gleam && export LD_LIBRARY_PATH=$CONDA_PREFIX/lib:$LD_LIBRARY_PATH
+```
 
 Robot URDFs are built by `scripts/prepare_robots.py` without ROS (Warthog, Jackal and Husky clone the Clearpath repos,
 LIMO uses `~/Documents/limo/agilex_open_class/limo/limo_description`). After xacro → URDF and DAE → OBJ conversion it

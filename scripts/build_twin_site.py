@@ -10,8 +10,10 @@ scripts/blender_twin.py work unchanged with --config configs/<name>.json.
 Stages (cached under data/<name>/; --redo <stage>):
     ground    bare-earth 2.5D terrain (collision + planning grids), DSM
     cloud     local-frame point cache sorted by 20 m tile
-    bake      ground tiles coloured from near-ground points, structure tiles = Poisson mesh of the
-              points above the ground, coloured from their nearest points
+    ortho     (optional) orthomosaic GeoTIFF tiles resampled to the local grid (umass_lidar/ortho.py)
+    bake      ground tiles coloured from the orthomosaic where the ground is seen from above, else from
+              near-ground points; structure tiles = Poisson mesh of the points above the ground,
+              coloured from their nearest points
     export    material fill, optional "grade" from the config, PNG + GLB per tile, URDF, twin.json
 """
 import argparse
@@ -34,7 +36,9 @@ from umass_lidar.structure import bilinear, reconstruct_tile, voxel_reduce  # no
 
 G = BT.G
 TILE = 20.0
-SRC_NAMES = ["none", "unused", "point_rgb", "material", "no_data", "point_rgb_lowfreq"]
+SRC_NAMES = ["none", "ortho", "point_rgb", "material", "no_data", "point_rgb_lowfreq"]
+# EE2023 campus survey deliverable: used automatically when it exists (--no-ortho or "ortho": false to skip)
+ORTHO_DEFAULT = Path("~/mydata/worldmodel/rss2027/EE2023/AllCampus_Spring2023_Edits_v3/Ortho Tiles").expanduser()
 
 
 def load_config(a):
@@ -47,14 +51,17 @@ def load_config(a):
         cf = ROOT / "configs" / f"{las.stem}.json"
         if not cf.exists():
             side = las.with_suffix(".json")
+            poly = None
             if side.exists():
-                bbox = json.loads(side.read_text())["bbox_utm"]
+                sj = json.loads(side.read_text())
+                bbox, poly = sj["bbox_utm"], sj.get("polygon_utm")
             else:
                 with laspy.open(str(las)) as f:
                     bbox = [float(f.header.mins[0]), float(f.header.mins[1]),
                             float(f.header.maxs[0]), float(f.header.maxs[1])]
             cf.write_text(json.dumps(dict(name=las.stem, source="las", las=str(las), bbox_utm=bbox,
-                                          crs="UTM 18N as in the source LAS"), indent=2))
+                                          crs="UTM 18N as in the source LAS",
+                                          **({"polygon_utm": poly} if poly else {})), indent=2))
             print(f"[site] wrote {cf}")
     cfg = json.loads(cf.read_text())
     cfg["twin_dir"] = str(ROOT / "assets/twin" / cfg["name"])
@@ -115,15 +122,39 @@ def bake_ground(job):
         lo, sup = _splat(xyz, col, bounds, tw, th, z, G["ground_tol"], G["fill"] / G["tex_res"])
         use = (src == texture.SRC_NONE) & (sup.ravel() > 3.0)
         rgb[use] = lo.reshape(-1, 3)[use]; src[use] = texture.SRC_LAS_LOW
+    n_ortho = 0
+    if G.get("ortho") is not None:
+        # orthomosaic: sharper than the ~0.1 m points, but it shows roofs and canopies where they hide the
+        # ground, so it is only used on texels that ground-level points prove to be visible from above
+        import cv2
+        om, ov, ores = np.load(G["ortho"], mmap_mode="r"), np.load(G["ortho_valid"], mmap_mode="r"), G["ortho_res"]
+        X0, Y0, X1, Y1 = bounds
+        r0, r1 = max(int(Y0 / ores) - 2, 0), min(int(Y1 / ores) + 3, om.shape[0])
+        c0, c1 = max(int(X0 / ores) - 2, 0), min(int(X1 / ores) + 3, om.shape[1])
+        u = ((X0 + (np.arange(tw) + 0.5) * (X1 - X0) / tw) / ores - 0.5 - c0).astype(np.float32)
+        v = ((Y0 + (np.arange(th) + 0.5) * (Y1 - Y0) / th) / ores - 0.5 - r0).astype(np.float32)
+        mu, mv = np.meshgrid(u, v)
+        interp = cv2.INTER_AREA if G["tex_res"] > 1.5 * ores else cv2.INTER_LINEAR
+        if interp == cv2.INTER_AREA:                     # coarser texels than the ortho: average, do not alias
+            k = int(round(G["tex_res"] / ores)) | 1
+            crop = cv2.blur(np.ascontiguousarray(om[r0:r1, c0:c1]), (k, k))
+        else:
+            crop = np.ascontiguousarray(om[r0:r1, c0:c1])
+        oc = cv2.remap(crop, mu, mv, cv2.INTER_LINEAR, borderMode=cv2.BORDER_REPLICATE).reshape(-1, 3)
+        okv = cv2.remap(np.ascontiguousarray(ov[r0:r1, c0:c1]).astype(np.uint8), mu, mv, cv2.INTER_NEAREST).ravel() > 0
+        use = okv & (src == texture.SRC_LAS)
+        rgb[use] = oc[use]; src[use] = texture.SRC_PHOTO
+        n_ortho = float(use.mean())
     semt = ndimage.map_coordinates(G["sem"].astype(np.float32), coords, order=0, mode="nearest").astype(np.uint8)
     src[(semt.ravel() == 3) & (src == texture.SRC_NONE)] = texture.SRC_NODATA
     stype = np.where(N[:, 2] > 0.9, 0, 1).astype(np.uint8)
     flat = np.full((th, tw), 128, np.uint8)
     np.savez(G["bake"] / f"{name}.npz", rgb=np.clip(rgb, 0, 255).astype(np.uint8).reshape(th, tw, 3),
              src=src.reshape(th, tw), i_fine=flat, i_smooth=flat, stype=stype.reshape(th, tw), bounds=np.array(bounds))
-    info = dict(shape=(th, tw), points=float((src == texture.SRC_LAS).mean()),
+    info = dict(shape=(th, tw), ortho=n_ortho, points=float((src == texture.SRC_LAS).mean()),
                 lowfreq=float((src == texture.SRC_LAS_LOW).mean()))
-    print(f"[bake] {name}: {info['shape']} points {info['points']*100:.0f}% lowfreq {info['lowfreq']*100:.0f}%", flush=True)
+    print(f"[bake] {name}: {info['shape']} ortho {n_ortho*100:.0f}% points {info['points']*100:.0f}% "
+          f"lowfreq {info['lowfreq']*100:.0f}%", flush=True)
     return name, info
 
 
@@ -180,12 +211,16 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--las", help="region LAS (data/sites/<name>.las); writes configs/<name>.json on first use")
     ap.add_argument("--config", help="existing configs/<name>.json instead of --las")
-    ap.add_argument("--redo", nargs="*", default=[], choices=["ground", "cloud", "bake"])
+    ap.add_argument("--redo", nargs="*", default=[], choices=["ground", "cloud", "ortho", "bake"])
     ap.add_argument("--name", default=None, help="variant (default: full, or crop with --region)")
     ap.add_argument("--region", type=float, nargs=4, metavar=("X0", "Y0", "X1", "Y1"),
                     help="only bake tiles overlapping this local-metre box (quick tests)")
     ap.add_argument("--ground-split", type=int, nargs=2, default=[6, 6])
-    ap.add_argument("--tex-res", type=float, default=0.05, help="ground texel (m); points are ~0.1 m apart")
+    ap.add_argument("--tex-res", type=float, default=None,
+                    help="ground texel (m); default 0.03 with an orthomosaic, else 0.05 (points are ~0.1 m apart)")
+    ap.add_argument("--ortho", default=None, help="folder of orthomosaic GeoTIFF tiles (EPSG:2249); "
+                    "default: the config's \"ortho\", else the EE2023 deliverable if it is on this machine")
+    ap.add_argument("--no-ortho", action="store_true", help="colour the ground from the points only")
     ap.add_argument("--struct-texel", type=float, default=0.05)
     ap.add_argument("--smooth", type=float, default=0.07, help="point colour splat sigma (m)")
     ap.add_argument("--fill", type=float, default=0.6, help="sigma (m) of the colour that fills ground holes")
@@ -226,6 +261,26 @@ def main():
     cloud = Cloud(cache / "cloud.npz")
     dsm = np.load(cache / "dsm.npy")
 
+    # ---- ortho
+    odir = a.ortho or cfg.get("ortho")
+    if odir is None and ORTHO_DEFAULT.is_dir():
+        odir = str(ORTHO_DEFAULT)
+    if a.no_ortho or odir is False:
+        odir = None
+    a.tex_res = a.tex_res or (0.03 if odir else 0.05)
+    opath = None
+    if odir:
+        from umass_lidar.ortho import OrthoTiles
+        ores = 0.03
+        opath, ovalid = cache / "ortho.npy", cache / "ortho_valid.npy"
+        if "ortho" in a.redo or not opath.exists():
+            orgb, ook = OrthoTiles(odir).render(meta["origin"][:2], meta["size_xy"], ores)
+            np.save(opath, orgb); np.save(ovalid, ook)
+            print(f"[site] ortho: {orgb.shape[1]}x{orgb.shape[0]} px at {ores} m, {ook.mean()*100:.1f}% covered, "
+                  f"{time.time()-t0:.0f}s", flush=True)
+            del orgb, ook
+        G.update(ortho=opath, ortho_valid=ovalid, ortho_res=ores)
+
     gjobs = [(n, c) for n, c in BT.ground_tiles(nx, ny, a.ground_split)
              if BT._overlaps(((c[0] + .5) * res, (c[2] + .5) * res, (c[1] + .5) * res, (c[3] + .5) * res), a.region)]
     sx, sy = meta["size_xy"]
@@ -259,7 +314,7 @@ def main():
         f = bake / f"{name}.npz"
         if f.exists():
             z = np.load(f)
-            k = z["src"][::3, ::3] == texture.SRC_LAS
+            k = np.isin(z["src"][::3, ::3], (texture.SRC_LAS, texture.SRC_PHOTO))
             table.add(z["stype"][::3, ::3][k], z["i_smooth"][::3, ::3][k].astype(np.float32) / 255,
                       z["rgb"][::3, ::3][k].astype(np.float64))
     G["table_rgb"] = table.table()
@@ -275,10 +330,12 @@ def main():
     w = np.array([d[2] if d[1] == "structure" else 1e6 for d in done], float)
     frac = (np.array([d[3] for d in done]) * w[:, None]).sum(0) / w.sum()
     failed = [n for n, _ in gjobs + sjobs if "failed" in (bake / f"{n}.done").read_text()]
-    summary = dict(config=cfg["name"], source="coloured point cloud (top-down)", las=cfg["las"], variant=variant,
+    summary = dict(config=cfg["name"],
+                   source="coloured point cloud (top-down)" + (" + orthomosaic ground" if odir else ""), las=cfg["las"], variant=variant,
                    region=a.region, tiles_ground=len(gjobs), tiles_structure=len(ejobs) - len(gjobs),
                    failed_tiles=failed, faces_visual=int(faces),
                    texel_source_fraction=dict(zip(SRC_NAMES, np.round(frac, 4).tolist())), ground_tex_res=a.tex_res,
+                   ortho=str(odir) if odir else None,
                    struct_texel=a.struct_texel, voxel=a.voxel, smooth=a.smooth, grade=cfg.get("grade"),
                    cloud_points=int(len(cloud.xyz)), collision="../ground.glb", origin=meta["origin"], crs=cfg["crs"])
     (twin / "twin.json").write_text(json.dumps(summary, indent=2))

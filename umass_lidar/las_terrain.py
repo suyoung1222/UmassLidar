@@ -65,6 +65,16 @@ def dense_core_bbox(path, res=2.0, min_density=150.0, pad=3.0, verbose=True):
     return bbox
 
 
+def _mem_available_gb():
+    try:
+        for line in open("/proc/meminfo"):
+            if line.startswith("MemAvailable"):
+                return int(line.split()[1]) / 2 ** 20
+    except OSError:
+        pass
+    return 16.0
+
+
 def _iter_bbox(path, bbox):
     """Yield (x, y, z, points) for points inside bbox, in local xy (origin = bbox min)."""
     import laspy
@@ -125,8 +135,12 @@ def build_terrain_from_las(las, out_dir, name, bbox=None, mesh_res=0.25, tex_res
     ny, nx = int(np.ceil(sy / mesh_res)), int(np.ceil(sx / mesh_res))
     zlo, zhi = info["mins"][2], info["maxs"][2]
     nz = int(np.ceil((zhi - zlo) / z_res)) + 1
-    if ny * nx * nz > 1.5e9:
-        raise MemoryError(f"voxel grid {ny}x{nx}x{nz} too large; crop smaller or raise --mesh-res")
+    need, avail = ny * nx * nz * 2 / 2 ** 30, _mem_available_gb()
+    if need > 0.6 * avail:
+        raise MemoryError(f"voxel grid {ny}x{nx}x{nz} needs {need:.1f} GB (available {avail:.1f} GB); "
+                          "crop smaller or raise --mesh-res")
+    if verbose and need > 2:
+        print(f"[las_terrain] voxel grid {ny}x{nx}x{nz}: {need:.1f} GB", flush=True)
 
     # ---- pass 1: voxel occupancy
     occ = np.zeros((ny * nx, nz), np.uint16)
@@ -142,15 +156,22 @@ def build_terrain_from_las(las, out_dir, name, bbox=None, mesh_res=0.25, tex_res
         if verbose:
             print(f"[las_terrain] pass 1: {n_in/1e6:.0f} M pts in bbox, {time.time()-t0:.0f}s", flush=True)
 
-    solid = occ >= min_pts
-    has = solid.any(1)
     # ground = lowest voxel holding a real share of the column. A plain "lowest occupied voxel"
     # is fooled by mirror-reflection ghost points below wet paving (they are few per voxel,
     # while the true surface next to the scanner holds hundreds).
-    strong = occ >= np.maximum(min_pts, 0.08 * occ.max(1, keepdims=True))
-    g_idx = np.where(has, strong.argmax(1), 0)
-    del strong
-    top_idx = np.where(has, nz - 1 - solid[:, ::-1].argmax(1), 0)  # highest occupied voxel
+    # Done in column blocks: the boolean / cumsum temporaries of the whole grid would be several
+    # times the size of `occ` itself.
+    ncol, blk = ny * nx, max(1, int(2e8 // nz))
+    has = np.zeros(ncol, bool); g_idx = np.zeros(ncol, np.int64); top_idx = np.zeros(ncol, np.int64)
+    for i in range(0, ncol, blk):
+        o = occ[i:i + blk]
+        solid = o >= min_pts
+        h_ = solid.any(1)
+        strong = o >= np.maximum(min_pts, 0.08 * o.max(1, keepdims=True))
+        has[i:i + blk] = h_
+        g_idx[i:i + blk] = np.where(h_, strong.argmax(1), 0)
+        top_idx[i:i + blk] = np.where(h_, nz - 1 - solid[:, ::-1].argmax(1), 0)  # highest occupied voxel
+    del solid, strong, o
     g0 = np.where(has, zlo + (g_idx + 0.5) * z_res, np.nan).reshape(ny, nx)
     top = np.where(has, zlo + (top_idx + 1.0) * z_res, np.nan).reshape(ny, nx)
 
@@ -167,12 +188,15 @@ def build_terrain_from_las(las, out_dir, name, bbox=None, mesh_res=0.25, tex_res
     g_v = np.clip(((g - zlo) / z_res).astype(np.int64), 0, nz - 1).ravel()
 
     # robot-band occupancy relative to the *smoothed* ground
-    cs = np.cumsum(occ, axis=1, dtype=np.int64)
-    rows = np.arange(ny * nx)
     lo = np.clip(g_v + int(round(band[0] / z_res)), 0, nz - 1)
     hi = np.clip(g_v + int(round(band[1] / z_res)), 0, nz - 1)
-    band_cnt = (cs[rows, hi] - cs[rows, lo]).reshape(ny, nx)
-    del cs
+    band_cnt = np.zeros(ncol, np.int64)
+    for i in range(0, ncol, blk):
+        cs = np.cumsum(occ[i:i + blk], axis=1, dtype=np.int64)
+        rows = np.arange(len(cs))
+        band_cnt[i:i + blk] = cs[rows, hi[i:i + blk]] - cs[rows, lo[i:i + blk]]
+    del cs, occ
+    band_cnt = band_cnt.reshape(ny, nx)
     obstacle = band_cnt >= band_pts
     obstacle = ndimage.binary_opening(obstacle, np.ones((2, 2))) | \
         (band_cnt >= band_pts * 5)                                # keep thin but dense (poles)

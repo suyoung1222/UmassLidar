@@ -13,7 +13,7 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-WAYPOINTS = "160 300 185 400 140 460 135 330".split()
+WAYPOINTS = "340 450 370 540 330 600 320 410".split()
 
 
 def main():
